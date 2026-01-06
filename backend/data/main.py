@@ -3,8 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 import uvicorn
-import data_loader
-from engine import BLEngine
+from . import data_loader
+from .engine import BLEngine
 
 app = FastAPI(title="Black-Litterman API")
 
@@ -104,4 +104,5 @@ def run_backtest(request: BacktestRequest):
 
 
 if __name__ == "__main__":
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
