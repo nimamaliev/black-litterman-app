@@ -44,14 +44,14 @@ export default function Dashboard() {
   const runScenario = () => {
     const payload = { views: scenarioViews, date: targetDate || null };
     setLoading(true);
-    axios.post('http://127.0.0.1:8000/recommendation/scenario', payload)
+    axios.post('https://blai-dwb1.onrender.com/recommendation/scenario', payload)
       .then(res => { setData(res.data); setLoading(false); setMcData(null); })
       .catch(err => { console.error(err); setLoading(false); });
   };
 
   const runMonteCarlo = () => {
     if (!data) return;
-    axios.post('http://127.0.0.1:8000/simulation/monte_carlo', {
+    axios.post('https://blai-dwb1.onrender.com/simulation/monte_carlo', {
       mu: data.metrics.expected_return,
       sigma: data.metrics.volatility,
       days: 252
@@ -356,4 +356,5 @@ export default function Dashboard() {
         </div>
     </div>
   )
+
 }
