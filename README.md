@@ -37,8 +37,12 @@ A custom-built backtesting engine designed to eliminate common quantitative pitf
 
 ## 🚀 Installation
 
-### Backend
+### Backend / Frontend
 ```bash
 cd backend
 pip install -r requirements.txt
 python main.py
+
+cd frontend
+npm install
+npm run dev
