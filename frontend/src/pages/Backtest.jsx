@@ -38,7 +38,7 @@ export default function Backtest() {
 
   const runBacktest = () => {
     setLoading(true);
-    axios.post('http://127.0.0.1:8000/simulation/backtest', {
+    axios.post('https://blai-dwb1.onrender.com/simulation/backtest', {
       start_date: startDate,
       end_date: endDate,
       views: views
@@ -202,4 +202,5 @@ export default function Backtest() {
       )}
     </div>
   )
+
 }
