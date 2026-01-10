@@ -195,7 +195,6 @@ export default function Backtest() {
                      <td className={`px-6 py-4 font-bold ${row.portfolio > 0 ? "text-green-400" : "text-red-400"}`}>{(row.portfolio * 100).toFixed(1)}%</td>
                      <td className="px-6 py-4">{(row.spy * 100).toFixed(1)}%</td>
                      <td className={`px-6 py-4 font-bold ${row.diff > 0 ? "text-blue-400" : "text-slate-500"}`}>{(row.diff > 0 ? "+" : "")}{(row.diff * 100).toFixed(1)}%</td>
-                     
                      {/* NEW DATA CELL */}
                      <td className="px-6 py-4 text-xs font-mono text-slate-400">
                         {row.top_holdings}
@@ -205,4 +204,8 @@ export default function Backtest() {
                </tbody>
              </table>
           </div>
-
+        </div>
+      )}
+    </div>
+  )
+}
