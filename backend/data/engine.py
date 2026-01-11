@@ -39,21 +39,16 @@ def clamp(x, lo, hi):
 def download_prices(symbols, start_date):
     print(f"--- Downloading data for {len(symbols)} symbols starting {start_date} ---")
     try:
-        # Auto_adjust=False to keep Close and Adj Close distinct, but we prefer Adj Close
         bundle = yf.download(symbols, start=start_date, auto_adjust=False, progress=False)
 
-        # Flatten MultiIndex columns if present (common yfinance issue)
         if isinstance(bundle.columns, pd.MultiIndex):
-            # Check if we have 'Adj Close' level
             if 'Adj Close' in bundle.columns.get_level_values(0):
                 px = bundle['Adj Close']
             elif 'Close' in bundle.columns.get_level_values(0):
                 px = bundle['Close']
             else:
-                # Fallback: try to just use the dataframe as is if it looks right
                 px = bundle
         else:
-            # Flat columns already?
             if "Adj Close" in bundle:
                 px = bundle["Adj Close"]
             elif "Close" in bundle:
@@ -61,10 +56,7 @@ def download_prices(symbols, start_date):
             else:
                 px = bundle
 
-        # Cleanup: Ensure index is DatetimeIndex
         px.index = pd.to_datetime(px.index)
-
-        # Drop columns that are all NaN (failed downloads)
         px = px.dropna(axis=1, how='all')
 
         print(f"--- Data Downloaded. Shape: {px.shape} ---")
@@ -338,7 +330,8 @@ class BLEngine:
         portfolio_returns_history = []
         spy_returns_history = []
         
-        weights_history = [] 
+        # --- FIXED: Use a simple list of tuples to store (Date, Weights) ---
+        weights_snapshots = [] 
 
         prev_weights = pd.Series(0.0, index=self.tickers)
         prev_delta = None
@@ -406,12 +399,10 @@ class BLEngine:
 
             w_aligned = weights.reindex(self.tickers).fillna(0.0)
             
-            # --- Capture Weights ---
+            # --- FIXED: Store tuple of (Date, Weights) ---
             weights_active_date = test_prices.index[0]
-            w_snapshot = w_aligned.copy()
-            w_snapshot.name = weights_active_date
-            weights_history.append(w_snapshot)
-            # -----------------------
+            weights_snapshots.append((weights_active_date, w_aligned))
+            # ---------------------------------------------
 
             prev_aligned = prev_weights.reindex(self.tickers).fillna(0.0)
             turnover = np.abs(w_aligned - prev_aligned).sum() / 2.0
@@ -441,16 +432,16 @@ class BLEngine:
         full_port_rets = pd.concat(portfolio_returns_history)
         full_spy_rets = pd.concat(spy_returns_history)
 
-        # --- Calculate Annual Average Weights ---
-        df_w = pd.DataFrame(weights_history)
-        
-        # FIX: Explicitly set the index to the dates to prevent reindexing failure
-        if not df_w.empty:
-            df_w.index = pd.to_datetime([s.name for s in weights_history])
+        # --- REBUILT WEIGHT CALCULATION ---
+        # 1. Unpack tuples
+        if weights_snapshots:
+            dates, w_list = zip(*weights_snapshots)
+            df_w = pd.DataFrame(w_list, index=dates)
+            df_w.index = pd.to_datetime(df_w.index)
+            # 2. Expand to daily frequency (matching returns index)
             df_w_daily = df_w.reindex(full_port_rets.index, method='ffill')
-            annual_weights_df = df_w_daily.resample('Y').mean()
         else:
-            annual_weights_df = pd.DataFrame()
+            df_w_daily = pd.DataFrame()
 
         port_curve = (1 + full_port_rets).cumprod() * initial_capital
         spy_curve = (1 + full_spy_rets).cumprod() * initial_capital
@@ -460,19 +451,16 @@ class BLEngine:
         
         yearly_table = []
         for dt, row in yearly_res.iterrows():
-            # Robust lookup by Year integer
-            y_weights = pd.Series()
-            try:
-                if not annual_weights_df.empty:
-                     # Filter matching year and take the first row (since it's resampled by Y, there is only one)
-                     match = annual_weights_df[annual_weights_df.index.year == dt.year]
-                     if not match.empty:
-                         y_weights = match.iloc[0]
-            except:
-                pass
+            holdings_str = ""
+            if not df_w_daily.empty:
+                # Filter for this specific year
+                # We use the daily DataFrame, so we get the average actual exposure during that year
+                mask = df_w_daily.index.year == dt.year
+                if mask.any():
+                    avg_w = df_w_daily.loc[mask].mean()
+                    top_3 = avg_w.sort_values(ascending=False).head(3)
+                    holdings_str = " ".join([f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01])
 
-            top_3 = y_weights.sort_values(ascending=False).head(3)
-            holdings_str = " ".join([f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01])
             if not holdings_str: holdings_str = "Cash/Div."
 
             yearly_table.append({
