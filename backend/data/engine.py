@@ -54,10 +54,6 @@ def download_prices(symbols, start_date):
                 px = bundle
         else:
             # Flat columns already?
-            # Usually yfinance returns a DataFrame with columns as tickers if only 1 ticker,
-            # or a MultiIndex if multiple. If we requested multiple, we expect columns to be tickers.
-            # However, sometimes it returns (PriceType, Ticker).
-            # Let's try to grab Adj Close if it exists as a column group
             if "Adj Close" in bundle:
                 px = bundle["Adj Close"]
             elif "Close" in bundle:
@@ -112,7 +108,6 @@ def detect_vol_regime(market_prices, current_date):
 
 
 def detect_concentration_regime(prices_train: pd.DataFrame):
-    # FIXED: Using 260 to ensure 12m momentum calculation is valid
     if prices_train.shape[0] < 260: return False, None, np.nan, np.nan
     mom_12 = prices_train.pct_change(252).iloc[-1].dropna()
     if mom_12.empty: return False, None, np.nan, np.nan
@@ -164,7 +159,6 @@ def generate_dynamic_views(prices_train, pi, market_prices_train, vol_regime, mo
 
 def optimize_bl_portfolio(S, pi, view_dict, conf_series, delta, tickers, w_anchor, max_weight_active):
     if not view_dict: return w_anchor.reindex(tickers).fillna(0.0)
-    # FIX: Use fillna(0.50) to treat missing confidences as neutral instead of dropping the view
     conf_series = conf_series.reindex(list(view_dict.keys())).fillna(0.50)
     bl = black_litterman.BlackLittermanModel(S, pi=pi, absolute_views=view_dict, omega="idzorek",
                                              view_confidences=conf_series, risk_aversion=delta)
@@ -217,7 +211,6 @@ class BLEngine:
         self.market_ticker = "SPY"
         self.risk_free_ticker = "^IRX"
 
-        # Download data if not provided
         if prices_df is None:
             all_syms = self.tickers + [self.market_ticker, self.risk_free_ticker] + ["VNQ", "VOX"]
             prices_df = download_prices(all_syms, "2005-01-01")
@@ -229,41 +222,32 @@ class BLEngine:
             self._prepare_data()
 
     def _prepare_data(self):
-        # 1. Ensure Index is Timezone-Naive (Fixes "No common dates" error)
         if self.prices.index.tz is not None:
             self.prices.index = self.prices.index.tz_localize(None)
 
-        # 2. Handle Proxies
         if "VNQ" in self.prices.columns and "XLRE" in self.prices.columns:
             self.prices["XLRE"] = self.prices["XLRE"].fillna(self.prices["VNQ"])
         if "VOX" in self.prices.columns and "XLC" in self.prices.columns:
             self.prices["XLC"] = self.prices["XLC"].fillna(self.prices["VOX"])
 
-        # 3. Market Data
         if self.market_ticker in self.prices.columns:
             self.market_prices = self.prices[self.market_ticker].dropna()
         else:
-            print(f"Warning: {self.market_ticker} not found in prices. Using dummy.")
             self.market_prices = pd.Series()
 
-            # 4. Risk Free Data
         if self.risk_free_ticker in self.prices.columns:
             self.rf_prices = self.prices[self.risk_free_ticker].ffill()
             self.rf_daily = (self.rf_prices / 100.0) / 252.0
         else:
-            print(f"Warning: {self.risk_free_ticker} not found. Assuming 0.04.")
             self.rf_daily = pd.Series(0.04 / 252, index=self.prices.index)
 
-        # 5. Asset Data
         available_tickers = [t for t in self.tickers if t in self.prices.columns]
         self.asset_prices = self.prices[available_tickers].dropna(how="any")
 
-        # 6. Intersection (Robust)
         common = self.asset_prices.index.intersection(self.market_prices.index).intersection(self.rf_daily.index)
 
         if len(common) == 0:
             print("CRITICAL: No common dates found. Check Timezones or Ticker Data.")
-            # Fallback: Try overlapping just assets and market
             common = self.asset_prices.index.intersection(self.market_prices.index)
             self.rf_daily = self.rf_daily.reindex(common).fillna(0.04 / 252)
 
@@ -279,7 +263,6 @@ class BLEngine:
         return self.asset_prices.loc[:dt], self.market_prices.loc[:dt]
 
     def run_scenario(self, user_views: list, target_date: str = None):
-        """Single date optimization (Dashboard)."""
         assets_hist, mkt_hist = self._get_data_window(target_date)
         if len(assets_hist) < 504: return {"error": f"Not enough data for {target_date}"}
 
@@ -322,19 +305,17 @@ class BLEngine:
             z = np.random.standard_normal(n_sims)
             paths[t] = paths[t - 1] * np.exp((mu - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * z)
 
-        # Select 5 random individual paths to show "spaghetti" lines
-        # This makes the chart look like a real simulation
         random_indices = np.random.choice(n_sims, 5, replace=False)
-        sample_paths = paths[:, random_indices].T.tolist()  # List of lists
+        sample_paths = paths[:, random_indices].T.tolist()
 
         return {
             "days": list(range(days)),
             "p05": np.percentile(paths, 5, axis=1).tolist(),
-            "p25": np.percentile(paths, 25, axis=1).tolist(),  # Inner band low
+            "p25": np.percentile(paths, 25, axis=1).tolist(),
             "p50": np.percentile(paths, 50, axis=1).tolist(),
-            "p75": np.percentile(paths, 75, axis=1).tolist(),  # Inner band high
+            "p75": np.percentile(paths, 75, axis=1).tolist(),
             "p95": np.percentile(paths, 95, axis=1).tolist(),
-            "sample_paths": sample_paths,  # Individual lines
+            "sample_paths": sample_paths,
             "simulation_count": n_sims
         }
 
@@ -357,9 +338,7 @@ class BLEngine:
         portfolio_returns_history = []
         spy_returns_history = []
         
-        # --- NEW: Track Weights ---
         weights_history = [] 
-        # --------------------------
 
         prev_weights = pd.Series(0.0, index=self.tickers)
         prev_delta = None
@@ -427,13 +406,12 @@ class BLEngine:
 
             w_aligned = weights.reindex(self.tickers).fillna(0.0)
             
-            # --- NEW: Capture Weights for Analysis ---
-            # Save weights with the date they became active (start of test period)
+            # --- Capture Weights ---
             weights_active_date = test_prices.index[0]
             w_snapshot = w_aligned.copy()
             w_snapshot.name = weights_active_date
             weights_history.append(w_snapshot)
-            # -----------------------------------------
+            # -----------------------
 
             prev_aligned = prev_weights.reindex(self.tickers).fillna(0.0)
             turnover = np.abs(w_aligned - prev_aligned).sum() / 2.0
@@ -446,7 +424,6 @@ class BLEngine:
             else:
                 prev_weights = w_aligned
 
-            # Drift Method
             period_rel = test_prices.div(test_prices.iloc[0])
             period_val = period_rel.dot(w_aligned)
             period_ret = period_val.pct_change().dropna()
@@ -458,23 +435,22 @@ class BLEngine:
             spy_rel = test_mkt.div(test_mkt.iloc[0])
             spy_ret = spy_rel.pct_change().dropna()
             spy_returns_history.append(spy_ret)
-            
-            # (ML Label Logic skipped for brevity - keep your existing code here)
 
         if not portfolio_returns_history: return {"error": "No simulation data generated"}
 
         full_port_rets = pd.concat(portfolio_returns_history)
         full_spy_rets = pd.concat(spy_returns_history)
 
-        # --- NEW: Calculate Annual Average Weights ---
-        # 1. Create DataFrame of rebalance points
+        # --- Calculate Annual Average Weights ---
         df_w = pd.DataFrame(weights_history)
-        # 2. Reindex to daily (ffill) to match the returns dataframe
-        # This ensures if we held Tech from Dec-March, it counts for Jan/Feb/Mar
-        df_w_daily = df_w.reindex(full_port_rets.index, method='ffill')
-        # 3. Resample by Year and take Mean
-        annual_weights_df = df_w_daily.resample('Y').mean()
-        # ---------------------------------------------
+        
+        # FIX: Explicitly set the index to the dates to prevent reindexing failure
+        if not df_w.empty:
+            df_w.index = pd.to_datetime([s.name for s in weights_history])
+            df_w_daily = df_w.reindex(full_port_rets.index, method='ffill')
+            annual_weights_df = df_w_daily.resample('Y').mean()
+        else:
+            annual_weights_df = pd.DataFrame()
 
         port_curve = (1 + full_port_rets).cumprod() * initial_capital
         spy_curve = (1 + full_spy_rets).cumprod() * initial_capital
@@ -484,11 +460,18 @@ class BLEngine:
         
         yearly_table = []
         for dt, row in yearly_res.iterrows():
-            # Get Top 3 Holdings for this year
-            y_weights = annual_weights_df.loc[dt] if dt in annual_weights_df.index else pd.Series()
+            # Robust lookup by Year integer
+            y_weights = pd.Series()
+            try:
+                if not annual_weights_df.empty:
+                     # Filter matching year and take the first row (since it's resampled by Y, there is only one)
+                     match = annual_weights_df[annual_weights_df.index.year == dt.year]
+                     if not match.empty:
+                         y_weights = match.iloc[0]
+            except:
+                pass
+
             top_3 = y_weights.sort_values(ascending=False).head(3)
-            
-            # Create string like "XLK(30%) XLE(20%)"
             holdings_str = " ".join([f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01])
             if not holdings_str: holdings_str = "Cash/Div."
 
@@ -497,11 +480,10 @@ class BLEngine:
                 "portfolio": row['Portfolio'],
                 "spy": row['SPY'],
                 "diff": row['Portfolio'] - row['SPY'],
-                "top_holdings": holdings_str  # <--- Added Field
+                "top_holdings": holdings_str
             })
 
         rets = df_res.pct_change().dropna()
-        # (Metrics calculation - keep existing code)
         sharpe_port = (rets['Portfolio'].mean() * 252) / (rets['Portfolio'].std() * np.sqrt(252))
         sharpe_spy = (rets['SPY'].mean() * 252) / (rets['SPY'].std() * np.sqrt(252))
         dd_port = calc_max_drawdown(df_res['Portfolio'])
