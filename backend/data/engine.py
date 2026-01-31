@@ -330,7 +330,7 @@ class BLEngine:
         portfolio_returns_history = []
         spy_returns_history = []
         
-        # --- FIXED: Use a simple list of tuples to store (Date, Weights) ---
+        # --- Store tuple of (Date, Weights) ---
         weights_snapshots = [] 
 
         prev_weights = pd.Series(0.0, index=self.tickers)
@@ -399,7 +399,7 @@ class BLEngine:
 
             w_aligned = weights.reindex(self.tickers).fillna(0.0)
             
-            # --- FIXED: Store tuple of (Date, Weights) ---
+            # --- Store weights with explicit date ---
             weights_active_date = test_prices.index[0]
             weights_snapshots.append((weights_active_date, w_aligned))
             # ---------------------------------------------
@@ -432,17 +432,6 @@ class BLEngine:
         full_port_rets = pd.concat(portfolio_returns_history)
         full_spy_rets = pd.concat(spy_returns_history)
 
-        # --- REBUILT WEIGHT CALCULATION ---
-        # 1. Unpack tuples
-        if weights_snapshots:
-            dates, w_list = zip(*weights_snapshots)
-            df_w = pd.DataFrame(w_list, index=dates)
-            df_w.index = pd.to_datetime(df_w.index)
-            # 2. Expand to daily frequency (matching returns index)
-            df_w_daily = df_w.reindex(full_port_rets.index, method='ffill')
-        else:
-            df_w_daily = pd.DataFrame()
-
         port_curve = (1 + full_port_rets).cumprod() * initial_capital
         spy_curve = (1 + full_spy_rets).cumprod() * initial_capital
 
@@ -450,26 +439,38 @@ class BLEngine:
         yearly_res = df_res.resample('Y').last().pct_change().dropna()
         
         yearly_table = []
+        
+        # --- FAILSAFE WEIGHT MATCHING LOGIC ---
         for dt, row in yearly_res.iterrows():
-            holdings_str = ""
-            if not df_w_daily.empty:
-                # Filter for this specific year
-                # We use the daily DataFrame, so we get the average actual exposure during that year
-                mask = df_w_daily.index.year == dt.year
-                if mask.any():
-                    avg_w = df_w_daily.loc[mask].mean()
-                    top_3 = avg_w.sort_values(ascending=False).head(3)
-                    holdings_str = " ".join([f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01])
-
-            if not holdings_str: holdings_str = "Cash/Div."
+            year_int = dt.year
+            
+            # 1. Collect all weight snapshots that happened during this year
+            weights_in_year = []
+            for (w_date, w_series) in weights_snapshots:
+                if w_date.year == year_int:
+                    weights_in_year.append(w_series)
+            
+            holdings_str = "Cash/Div."
+            
+            # 2. If we found any weights for this year, average them and format
+            if weights_in_year:
+                # Convert list of series to DataFrame to mean() easily
+                avg_weights = pd.DataFrame(weights_in_year).mean()
+                
+                # Sort descending
+                top_3 = avg_weights.sort_values(ascending=False).head(3)
+                
+                # Create string
+                holdings_str = " ".join([f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01])
 
             yearly_table.append({
-                "year": dt.year,
+                "year": year_int,
                 "portfolio": row['Portfolio'],
                 "spy": row['SPY'],
                 "diff": row['Portfolio'] - row['SPY'],
                 "top_holdings": holdings_str
             })
+        # --------------------------------------
 
         rets = df_res.pct_change().dropna()
         sharpe_port = (rets['Portfolio'].mean() * 252) / (rets['Portfolio'].std() * np.sqrt(252))
