@@ -381,6 +381,8 @@ class BLEngine:
                     p_mom = float(ml_model.predict_proba(X_now)[0, 1])
                     mom_weight_override = clamp(0.25 + 0.60 * p_mom, 0.25, 0.85)
 
+                    print(f"🤖 AI ACTIVE | Date: {current_date.date()} | Training Data: {len(X_train)} rows | Prediction: Momentum has {p_mom:.1%} chance of working")
+
             is_conc, _, _, _ = detect_concentration_regime(train_prices)
             max_w = 0.40 if is_conc else 0.30
             if is_conc and mom_weight_override: mom_weight_override = clamp(mom_weight_override + CONC_MOM_BONUS, 0.25, 0.90)
@@ -515,3 +517,4 @@ class BLEngine:
             },
             "yearly_table": yearly_table
         }
+
