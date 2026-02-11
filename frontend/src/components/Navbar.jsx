@@ -32,10 +32,15 @@ export default function Navbar() {
             <Link to="/info" className={`px-4 py-2 rounded-md text-sm font-medium transition flex items-center gap-2 ${isActive('/info')}`}>
               <BookOpen size={16} /> Model Logic
             </Link>
+            <Link to="/how-to-use" className="flex items-center gap-2 hover:text-blue-400 transition">
+              <BookOpen size={18} />
+              <span>User Guide</span>
+            </Link>
           </div>
 
         </div>
       </div>
     </nav>
   );
+
 }
