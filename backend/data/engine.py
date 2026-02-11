@@ -427,6 +427,25 @@ class BLEngine:
             spy_ret = spy_rel.pct_change().dropna()
             spy_returns_history.append(spy_ret)
 
+            # We look at what ACTUALLY happened in the test period to label our training data
+            if ml_available and not test_mkt.empty and leader_info:
+                # Did Momentum work? (Simple Label: 1 if Market was Up, 0 if Down)
+                # A more complex label could be: Did High Momentum Assets outperform Low Momentum?
+                future_mkt_ret = (test_mkt.iloc[-1] / test_mkt.iloc[0]) - 1
+                label = 1 if future_mkt_ret > 0 else 0
+                
+                # We store the FEATURES from 'current_date' (start of period)
+                # mapped to the LABEL from 'test_end' (end of period)
+                ml_rows.append({
+                    "leader_strength": leader_info["leader_strength"],
+                    "breadth": leader_info["breadth"],
+                    "dispersion": leader_info["dispersion"],
+                    "avg_corr": leader_info["avg_corr"],
+                    "spy_trend_12m": spy_trend_12m if np.isfinite(spy_trend_12m) else 0.0,
+                    "spy_vol_6m": spy_vol_6m if np.isfinite(spy_vol_6m) else 0.0,
+                    "label_momentum_works": label
+                })
+                    
         if not portfolio_returns_history: return {"error": "No simulation data generated"}
 
         full_port_rets = pd.concat(portfolio_returns_history)
@@ -496,3 +515,4 @@ class BLEngine:
             },
             "yearly_table": yearly_table
         }
+
