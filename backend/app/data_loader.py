@@ -4,9 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # Configuration
-DATA_DIR = "data"
-# On Render, we might be inside 'backend/data' or just 'data'. 
-# Let's use absolute paths to be safe.
+# Use absolute paths to ensure it works on Render
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PRICES_FILE = os.path.join(BASE_DIR, "data", "prices.parquet")
 
@@ -24,18 +22,30 @@ def ensure_data_freshness():
         os.makedirs(os.path.dirname(PRICES_FILE))
 
     needs_update = True
+    
     if os.path.exists(PRICES_FILE):
         try:
-            # Check modification time
-            mod_time = datetime.fromtimestamp(os.path.getmtime(PRICES_FILE))
-            if mod_time.date() == datetime.now().date():
-                needs_update = False
-                print("Data is fresh. Loading from cache.")
-        except Exception:
+            # FIX: Check the CONTENT of the file, not the file creation date.
+            # On Render, file creation date resets on every deploy, causing "False Freshness".
+            df = pd.read_parquet(PRICES_FILE)
+            
+            if not df.empty:
+                last_data_date = df.index.max().date()
+                today = datetime.now().date()
+                
+                # If we have data up to today (or later??), we are good.
+                if last_data_date >= today:
+                    needs_update = False
+                    print(f"Data is fresh (Last date: {last_data_date}). Loading from cache.")
+                else:
+                    print(f"Data is stale (Last date: {last_data_date} vs Today: {today}). Force refreshing...")
+            
+        except Exception as e:
+            print(f"Cache check failed ({e}). Redownloading...")
             pass
 
     if needs_update:
-        print("Data is stale or missing. Downloading from Yahoo...")
+        print("Downloading fresh data from Yahoo Finance...")
         _download_and_save()
 
 def _download_and_save():
@@ -43,9 +53,9 @@ def _download_and_save():
     
     # FIX: Disable yfinance cache to prevent 'database is locked' on Render
     try:
-        yf.set_tz_cache_location("/tmp/yf_cache") # Try moving cache to tmp
+        yf.set_tz_cache_location("/tmp/yf_cache")
     except:
-        pass # If fails, ignore
+        pass 
 
     try:
         # Download data
@@ -103,4 +113,3 @@ def load_data():
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
     return df
-
