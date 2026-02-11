@@ -78,4 +78,4 @@ watchdog==6.0.0
 websockets==15.0.1
 yfinance==0.2.66
 httpx
-pyarrow
+
