@@ -8,7 +8,7 @@ DATA_DIR = "data"
 # On Render, we might be inside 'backend/data' or just 'data'. 
 # Let's use absolute paths to be safe.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PRICES_FILE = os.path.join(BASE_DIR, "prices.parquet")
+PRICES_FILE = os.path.join(BASE_DIR, "data", "prices.parquet")
 
 # Your Tickers
 TICKERS = [
@@ -103,3 +103,4 @@ def load_data():
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
     return df
+
