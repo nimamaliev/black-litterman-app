@@ -3,6 +3,7 @@ import Navbar from './components/Navbar';
 import Dashboard from './pages/Dashboard';
 import Backtest from './pages/Backtest';
 import Info from './pages/Info';
+import HowToUse from './pages/HowToUse';
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/info" element={<Info />} />
+            <Route path="/how-to-use" element={<HowToUse />} />
           </Routes>
         </main>
       </div>
