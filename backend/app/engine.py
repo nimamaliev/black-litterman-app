@@ -427,10 +427,10 @@ class BLEngine:
             spy_ret = spy_rel.pct_change().dropna()
             spy_returns_history.append(spy_ret)
 
+            # --- START FIX: ML LABEL GENERATION ---
             # We look at what ACTUALLY happened in the test period to label our training data
             if ml_available and not test_mkt.empty and leader_info:
                 # Did Momentum work? (Simple Label: 1 if Market was Up, 0 if Down)
-                # A more complex label could be: Did High Momentum Assets outperform Low Momentum?
                 future_mkt_ret = (test_mkt.iloc[-1] / test_mkt.iloc[0]) - 1
                 label = 1 if future_mkt_ret > 0 else 0
                 
@@ -445,6 +445,7 @@ class BLEngine:
                     "spy_vol_6m": spy_vol_6m if np.isfinite(spy_vol_6m) else 0.0,
                     "label_momentum_works": label
                 })
+            # --- END FIX ---
                     
         if not portfolio_returns_history: return {"error": "No simulation data generated"}
 
@@ -479,8 +480,14 @@ class BLEngine:
                 # Sort descending
                 top_3 = avg_weights.sort_values(ascending=False).head(3)
                 
-                # Create string
-                holdings_str = " ".join([f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01])
+                # Create string parts only if weight > 1%
+                parts = [f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01]
+                
+                # FIX: Only overwrite if we actually generated string parts
+                if parts:
+                    holdings_str = " ".join(parts)
+                else:
+                    holdings_str = "Diverse/Cash"
 
             yearly_table.append({
                 "year": year_int,
@@ -515,4 +522,3 @@ class BLEngine:
             },
             "yearly_table": yearly_table
         }
-
