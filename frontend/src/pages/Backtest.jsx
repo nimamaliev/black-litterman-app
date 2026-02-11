@@ -44,6 +44,9 @@ export default function Backtest() {
       views: views
     })
     .then(res => {
+      // --- DEBUG LINE: Check if 'top_holdings' exists in the response ---
+      console.log("Backtest Data Received:", res.data.yearly_table); 
+      // ------------------------------------------------------------------
       const points = res.data.dates.map((date, i) => ({
         date,
         Portfolio: parseFloat(res.data.portfolio[i].toFixed(0)),
@@ -209,3 +212,4 @@ export default function Backtest() {
     </div>
   )
 }
+
