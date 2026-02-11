@@ -427,15 +427,10 @@ class BLEngine:
             spy_ret = spy_rel.pct_change().dropna()
             spy_returns_history.append(spy_ret)
 
-            # --- START FIX: ML LABEL GENERATION ---
-            # We look at what ACTUALLY happened in the test period to label our training data
+            # --- ML LABEL GENERATION ---
             if ml_available and not test_mkt.empty and leader_info:
-                # Did Momentum work? (Simple Label: 1 if Market was Up, 0 if Down)
                 future_mkt_ret = (test_mkt.iloc[-1] / test_mkt.iloc[0]) - 1
                 label = 1 if future_mkt_ret > 0 else 0
-                
-                # We store the FEATURES from 'current_date' (start of period)
-                # mapped to the LABEL from 'test_end' (end of period)
                 ml_rows.append({
                     "leader_strength": leader_info["leader_strength"],
                     "breadth": leader_info["breadth"],
@@ -445,7 +440,6 @@ class BLEngine:
                     "spy_vol_6m": spy_vol_6m if np.isfinite(spy_vol_6m) else 0.0,
                     "label_momentum_works": label
                 })
-            # --- END FIX ---
                     
         if not portfolio_returns_history: return {"error": "No simulation data generated"}
 
@@ -470,7 +464,8 @@ class BLEngine:
                 if w_date.year == year_int:
                     weights_in_year.append(w_series)
             
-            holdings_str = "Cash/Div."
+            # Default text
+            holdings_str = "Balanced"
             
             # 2. If we found any weights for this year, average them and format
             if weights_in_year:
@@ -483,11 +478,9 @@ class BLEngine:
                 # Create string parts only if weight > 1%
                 parts = [f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01]
                 
-                # FIX: Only overwrite if we actually generated string parts
+                # Only overwrite if we actually generated string parts
                 if parts:
                     holdings_str = " ".join(parts)
-                else:
-                    holdings_str = "Diverse/Cash"
 
             yearly_table.append({
                 "year": year_int,
