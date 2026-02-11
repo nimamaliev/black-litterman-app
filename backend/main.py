@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 import uvicorn
-from . import data_loader
-from .engine import BLEngine
+# --- FIXED IMPORTS ---
+from app import data_loader       # Changed from . import data_loader
+from app.engine import BLEngine   # Changed from .engine import BLEngine
+# ---------------------
 
 app = FastAPI(title="Black-Litterman API")
 
