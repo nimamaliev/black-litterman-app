@@ -140,7 +140,7 @@ export default function HowToUse() {
             <h4 className="font-bold text-white text-lg">Why 3 Months?</h4>
             <p className="text-slate-400 text-sm mt-1">
                 Our Backtest Engine uses a <strong>63-Trading-Day (1 Quarter)</strong> rebalancing frequency. 
-                The 15%+ excess returns shown in the backtest were achieved by waiting, not by chasing daily candles.
+                The excess returns shown in the backtest were achieved by waiting, not by chasing daily candles.
             </p>
         </div>
       </div>
