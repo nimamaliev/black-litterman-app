@@ -3,11 +3,13 @@ import numpy as np
 import yfinance as yf
 from pypfopt import black_litterman, risk_models, EfficientFrontier
 import warnings
+import logging
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # CONSTANTS & CONFIG
@@ -27,6 +29,19 @@ CONC_LEADER_Z_ON = 1.00
 CONC_BREADTH_OFF = 0.40
 MANUAL_EXTRA_CAP = 0.15
 CONF_CAP_LO, CONF_CAP_HI = 0.05, 0.85
+DEFAULT_RF = 0.02  # fallback annual risk-free rate when ^IRX is unavailable
+
+# --- Defensive volatility-targeting overlay -------------------------------
+# When VOL_TARGET is not None (annualized, e.g. 0.10 = 10%), daily portfolio
+# exposure in run_backtest is scaled so trailing realized volatility ~ VOL_TARGET;
+# the un-invested fraction earns the daily risk-free rate. No leverage or
+# shorting (exposure clamped to [EXPOSURE_FLOOR, EXPOSURE_CAP]); the signal is
+# lagged one day to avoid look-ahead. Set VOL_TARGET = None to disable and
+# recover the original always-invested behavior.
+VOL_TARGET = 0.10
+VOL_TARGET_LOOKBACK = 21
+EXPOSURE_FLOOR = 0.00
+EXPOSURE_CAP = 1.00
 
 
 # ==========================================
@@ -37,36 +52,26 @@ def clamp(x, lo, hi):
 
 
 def download_prices(symbols, start_date):
-    print(f"--- Downloading data for {len(symbols)} symbols starting {start_date} ---")
+    """Download a flattened price DataFrame for the given symbols.
+
+    Delegates to data_loader.download_and_flatten so the Yahoo Finance
+    download + column-flattening logic lives in exactly one place.
+    """
+    from app.data_loader import download_and_flatten
     try:
-        bundle = yf.download(symbols, start=start_date, auto_adjust=False, progress=False)
-
-        if isinstance(bundle.columns, pd.MultiIndex):
-            if 'Adj Close' in bundle.columns.get_level_values(0):
-                px = bundle['Adj Close']
-            elif 'Close' in bundle.columns.get_level_values(0):
-                px = bundle['Close']
-            else:
-                px = bundle
-        else:
-            if "Adj Close" in bundle:
-                px = bundle["Adj Close"]
-            elif "Close" in bundle:
-                px = bundle["Close"]
-            else:
-                px = bundle
-
-        px.index = pd.to_datetime(px.index)
-        px = px.dropna(axis=1, how='all')
-
-        print(f"--- Data Downloaded. Shape: {px.shape} ---")
-        return px
+        return download_and_flatten(symbols, start_date)
     except Exception as e:
-        print(f"!!! Error downloading data: {e}")
+        logger.error("Error downloading data: %s", e)
         return pd.DataFrame()
 
 
-def risk_parity_anchor(cov: pd.DataFrame) -> pd.Series:
+def inverse_vol_anchor(cov: pd.DataFrame) -> pd.Series:
+    """Inverse-volatility weights used as the equilibrium anchor.
+
+    NOTE: This is a simplified risk-based anchor (weights proportional to 1/vol).
+    It is NOT full risk parity / equal risk contribution (ERC), which would
+    account for cross-asset correlations via the full covariance matrix.
+    """
     vol = np.sqrt(np.diag(cov))
     w = 1.0 / (vol + 1e-12)
     w = w / w.sum()
@@ -77,19 +82,21 @@ def get_equilibrium_from_anchor(prices_train, market_prices_train, prev_delta=No
     S = risk_models.CovarianceShrinkage(prices_train).ledoit_wolf()
     try:
         delta_raw = black_litterman.market_implied_risk_aversion(market_prices_train)
-        if not np.isfinite(delta_raw): raise ValueError("delta not finite")
+        if not np.isfinite(delta_raw):
+            raise ValueError("delta not finite")
     except Exception:
         delta_raw = 2.5
     delta_raw = clamp(float(delta_raw), DELTA_MIN, DELTA_MAX)
     delta = delta_raw if prev_delta is None else (DELTA_SMOOTH * prev_delta + (1 - DELTA_SMOOTH) * delta_raw)
-    w_anchor = risk_parity_anchor(S)
+    w_anchor = inverse_vol_anchor(S)
     pi = pd.Series(delta * (S @ w_anchor), index=prices_train.columns)
     return S, delta, pi, w_anchor
 
 
 def detect_vol_regime(market_prices, current_date):
     mkt_hist = market_prices.loc[:current_date].dropna()
-    if len(mkt_hist) < 100: return "low", np.nan, np.nan
+    if len(mkt_hist) < 100:
+        return "low", np.nan, np.nan
     rolling_vol = mkt_hist.pct_change().rolling(63).std() * np.sqrt(252)
     hist_median = float(rolling_vol.median())
     tail = mkt_hist.iloc[-TRAIN_WINDOW:] if len(mkt_hist) >= TRAIN_WINDOW else mkt_hist
@@ -100,9 +107,11 @@ def detect_vol_regime(market_prices, current_date):
 
 
 def detect_concentration_regime(prices_train: pd.DataFrame):
-    if prices_train.shape[0] < 260: return False, None, np.nan, np.nan
+    if prices_train.shape[0] < 260:
+        return False, None, np.nan, np.nan
     mom_12 = prices_train.pct_change(252).iloc[-1].dropna()
-    if mom_12.empty: return False, None, np.nan, np.nan
+    if mom_12.empty:
+        return False, None, np.nan, np.nan
     z_mom = (mom_12 - mom_12.mean()) / (mom_12.std() + 1e-12)
     leader = z_mom.idxmax()
     leader_z = float(z_mom.loc[leader])
@@ -138,7 +147,8 @@ def generate_dynamic_views(prices_train, pi, market_prices_train, vol_regime, mo
     conf = {}
     for t in combined_z.index:
         z = float(combined_z[t])
-        if abs(z) < view_z_cutoff: continue
+        if abs(z) < view_z_cutoff:
+            continue
         implied_ret = float(pi[t])
         vol = float(asset_vol[t])
         alpha = 0.35 * vol * z
@@ -149,8 +159,16 @@ def generate_dynamic_views(prices_train, pi, market_prices_train, vol_regime, mo
     return view_dict, pd.Series(conf), mom_weight, rev_weight, view_z_cutoff
 
 
-def optimize_bl_portfolio(S, pi, view_dict, conf_series, delta, tickers, w_anchor, max_weight_active):
-    if not view_dict: return w_anchor.reindex(tickers).fillna(0.0)
+def optimize_bl_portfolio(S, pi, view_dict, conf_series, delta, tickers, w_anchor,
+                          max_weight_active, risk_free_rate=DEFAULT_RF):
+    """Returns (weights, posterior_returns, posterior_cov).
+
+    When there are no views, the anchor weights are returned and the posterior
+    collapses to the prior (pi, S).
+    """
+    if not view_dict:
+        w = w_anchor.reindex(tickers).fillna(0.0)
+        return w, pi.copy(), S
     conf_series = conf_series.reindex(list(view_dict.keys())).fillna(0.50)
     bl = black_litterman.BlackLittermanModel(S, pi=pi, absolute_views=view_dict, omega="idzorek",
                                              view_confidences=conf_series, risk_aversion=delta)
@@ -159,12 +177,15 @@ def optimize_bl_portfolio(S, pi, view_dict, conf_series, delta, tickers, w_ancho
     ef = EfficientFrontier(ret_bl, S_bl)
     ef.add_constraint(lambda w: w <= max_weight_active)
     ef.add_constraint(lambda w: w >= MIN_WEIGHT)
-    ef.max_sharpe()
-    return pd.Series(ef.clean_weights()).reindex(tickers).fillna(0.0)
+    # Pass an explicit risk-free rate so the optimizer and our reported metrics agree.
+    ef.max_sharpe(risk_free_rate=risk_free_rate)
+    weights = pd.Series(ef.clean_weights()).reindex(tickers).fillna(0.0)
+    return weights, ret_bl, S_bl
 
 
 def compute_leadership_features(prices_train: pd.DataFrame, market_train: pd.Series):
-    if len(prices_train) < 260 or len(market_train) < 260: return None
+    if len(prices_train) < 260 or len(market_train) < 260:
+        return None
     rs12 = (prices_train.iloc[-1] / prices_train.iloc[-252]) / (market_train.iloc[-1] / market_train.iloc[-252]) - 1
     rs6 = (prices_train.iloc[-1] / prices_train.iloc[-126]) / (market_train.iloc[-1] / market_train.iloc[-126]) - 1
     leadership_score = 0.7 * rs12 + 0.3 * rs6
@@ -181,7 +202,8 @@ def compute_leadership_features(prices_train: pd.DataFrame, market_train: pd.Ser
 
 def build_ml_dataset(ml_rows):
     df = pd.DataFrame(ml_rows).dropna()
-    if df.empty: return None, None, None
+    if df.empty:
+        return None, None, None
     feature_cols = ["leader_strength", "breadth", "dispersion", "avg_corr", "spy_trend_12m", "spy_vol_6m"]
     X = df[feature_cols].copy()
     y = df["label_momentum_works"].astype(int).copy()
@@ -209,7 +231,7 @@ class BLEngine:
 
         self.prices = prices_df
         if self.prices.empty:
-            print("CRITICAL ERROR: No price data downloaded. Engine will fail.")
+            logger.error("CRITICAL ERROR: No price data downloaded. Engine will fail.")
         else:
             self._prepare_data()
 
@@ -231,7 +253,7 @@ class BLEngine:
             self.rf_prices = self.prices[self.risk_free_ticker].ffill()
             self.rf_daily = (self.rf_prices / 100.0) / 252.0
         else:
-            self.rf_daily = pd.Series(0.04 / 252, index=self.prices.index)
+            self.rf_daily = pd.Series(DEFAULT_RF / 252, index=self.prices.index)
 
         available_tickers = [t for t in self.tickers if t in self.prices.columns]
         self.asset_prices = self.prices[available_tickers].dropna(how="any")
@@ -239,65 +261,173 @@ class BLEngine:
         common = self.asset_prices.index.intersection(self.market_prices.index).intersection(self.rf_daily.index)
 
         if len(common) == 0:
-            print("CRITICAL: No common dates found. Check Timezones or Ticker Data.")
+            logger.error("CRITICAL: No common dates found. Check Timezones or Ticker Data.")
             common = self.asset_prices.index.intersection(self.market_prices.index)
-            self.rf_daily = self.rf_daily.reindex(common).fillna(0.04 / 252)
+            self.rf_daily = self.rf_daily.reindex(common).fillna(DEFAULT_RF / 252)
 
         self.asset_prices = self.asset_prices.loc[common]
         self.market_prices = self.market_prices.loc[common]
         self.rf_daily = self.rf_daily.loc[common]
 
-        print(f"--- Data Prepared. Rows: {len(self.asset_prices)} ---")
+        logger.info("Data prepared. Rows: %d", len(self.asset_prices))
+
+    def _annual_rf(self, as_of_date=None):
+        """Most recent annualized risk-free rate at/just before as_of_date."""
+        try:
+            series = self.rf_daily if as_of_date is None else self.rf_daily.loc[:as_of_date]
+            series = series.dropna()
+            if series.empty:
+                return DEFAULT_RF
+            return float(series.iloc[-1] * 252)
+        except Exception:
+            return DEFAULT_RF
 
     def _get_data_window(self, target_date=None):
-        if not target_date: return self.asset_prices, self.market_prices
+        if not target_date:
+            return self.asset_prices, self.market_prices
         dt = pd.Timestamp(target_date)
         return self.asset_prices.loc[:dt], self.market_prices.loc[:dt]
 
     def run_scenario(self, user_views: list, target_date: str = None):
         assets_hist, mkt_hist = self._get_data_window(target_date)
-        if len(assets_hist) < 504: return {"error": f"Not enough data for {target_date}"}
+        if len(assets_hist) < 504:
+            return {"error": f"Not enough data for {target_date}"}
 
         train_window = 504
         train_prices = assets_hist.iloc[-train_window:]
         train_mkt = mkt_hist.iloc[-train_window:]
         current_date = train_prices.index[-1]
 
+        rf_now = self._annual_rf(current_date)
+
         vol_regime, _, _ = detect_vol_regime(mkt_hist, current_date)
         S, delta, pi, w_anchor = get_equilibrium_from_anchor(train_prices, train_mkt)
         view_dict, conf_series, _, _, _ = generate_dynamic_views(train_prices, pi, train_mkt, vol_regime)
 
+        # Apply user views with the SAME clamping rules used in the backtest,
+        # so the dashboard and backtest treat discretionary views identically.
         applied = []
+        input_warnings = []
         for v in user_views:
             t = v['ticker']
-            if t in self.tickers:
-                view_dict[t] = pi[t] + float(v['value'])
-                conf_series[t] = float(v['confidence'])
-                applied.append(f"{t} +{v['value']:.1%}")
+            if t not in self.tickers:
+                input_warnings.append(
+                    f"Ignored unknown ticker '{t}'. Valid tickers: {', '.join(self.tickers)}."
+                )
+                continue
+            raw_val = float(v['value'])
+            raw_conf = float(v['confidence'])
+            extra = float(clamp(raw_val, -MANUAL_EXTRA_CAP, MANUAL_EXTRA_CAP))
+            conf = float(clamp(raw_conf, CONF_CAP_LO, CONF_CAP_HI))
+            if extra != raw_val:
+                input_warnings.append(
+                    f"{t}: excess return {raw_val:.1%} was capped to {extra:.1%} "
+                    f"(allowed range \u00b1{MANUAL_EXTRA_CAP:.0%})."
+                )
+            if conf != raw_conf:
+                input_warnings.append(
+                    f"{t}: confidence {raw_conf:.0%} was capped to {conf:.0%} "
+                    f"(allowed range {CONF_CAP_LO:.0%}-{CONF_CAP_HI:.0%})."
+                )
+            view_dict[t] = float(pi[t]) + extra
+            conf_series[t] = conf
+            applied.append(f"{t} +{extra:.1%}")
 
-        weights = optimize_bl_portfolio(S, pi, view_dict, conf_series, delta, self.tickers, w_anchor, 0.40)
+        weights, ret_post, S_post = optimize_bl_portfolio(
+            S, pi, view_dict, conf_series, delta, self.tickers, w_anchor, 0.40, risk_free_rate=rf_now
+        )
 
-        port_ret = float(weights.dot(pi))
-        port_var = weights.T @ S @ weights
-        port_vol = float(np.sqrt(port_var))
+        # Report expected return/vol against the BL POSTERIOR (the distribution
+        # the portfolio was actually optimized on), not the prior pi.
+        common_t = [t for t in self.tickers if t in S_post.index]
+        w_vec = weights.reindex(common_t).fillna(0.0)
+        ret_vec = ret_post.reindex(common_t).fillna(0.0)
+        S_mat = S_post.reindex(index=common_t, columns=common_t)
+        port_ret = float(w_vec.values @ ret_vec.values)
+        port_var = float(w_vec.values @ S_mat.values @ w_vec.values)
+        port_vol = float(np.sqrt(max(port_var, 0.0)))
+
+        # Prior (market-implied equilibrium) vs posterior (after views) expected
+        # returns per sector, so the UI can visualize how the views moved them.
+        expected_returns = {
+            "prior": {t: float(pi.get(t, 0.0)) for t in self.tickers},
+            "posterior": {t: float(ret_post.get(t, 0.0)) for t in self.tickers},
+        }
+
+        # Plain-language summary for non-technical users.
+        sharpe_val = (port_ret - rf_now) / port_vol if port_vol > 1e-9 else 0.0
+        ranked = sorted(weights.to_dict().items(), key=lambda kv: kv[1], reverse=True)
+        top = [(t, w) for t, w in ranked if w > 0.005][:3]
+        holdings_txt = (
+            ", ".join(f"{t} ({w:.0%})" for t, w in top) if top else "a broadly balanced mix"
+        )
+        summary = (
+            f"As of {current_date.date()}, the model's largest positions are {holdings_txt}. "
+            f"It targets an expected annual return of {port_ret:.1%} with {port_vol:.1%} "
+            f"volatility (Sharpe {sharpe_val:.2f}), in a {vol_regime}-volatility market regime."
+        )
+        if applied:
+            plural = "s" if len(applied) != 1 else ""
+            summary += (
+                f" Your {len(applied)} view{plural} ({', '.join(applied)}) have been incorporated."
+            )
+
+        # --- Live volatility-target exposure (mirrors the backtest overlay) ---
+        # Estimate trailing realized portfolio volatility from the recommended
+        # weights over the last VOL_TARGET_LOOKBACK days, then scale exposure
+        # toward VOL_TARGET. Whatever is not invested sits in cash at the rf rate.
+        exposure = 1.0
+        realized_vol = None
+        if VOL_TARGET is not None:
+            recent_rets = train_prices.pct_change().iloc[-VOL_TARGET_LOOKBACK:]
+            w_live = weights.reindex(recent_rets.columns).fillna(0.0)
+            port_rets_live = recent_rets.values @ w_live.values
+            realized_vol = float(np.nanstd(port_rets_live, ddof=1) * np.sqrt(252))
+            if realized_vol > 1e-9:
+                exposure = float(np.clip(VOL_TARGET / realized_vol, EXPOSURE_FLOOR, EXPOSURE_CAP))
+        invested_pct = exposure
+        cash_pct = 1.0 - exposure
+
+        summary += (
+            f" Given current volatility, the model recommends being about "
+            f"{invested_pct:.0%} invested and {cash_pct:.0%} in cash."
+        )
 
         return {
             "date": str(current_date.date()),
+            "exposure": {
+                "invested": invested_pct,
+                "cash": cash_pct,
+                "vol_target": VOL_TARGET,
+                "realized_vol": realized_vol,
+            },
             "weights": weights.to_dict(),
             "regime": {"volatility": vol_regime},
-            "metrics": {"delta": round(delta, 2), "expected_return": port_ret, "volatility": port_vol},
+            "metrics": {
+                "delta": round(delta, 2),
+                "expected_return": port_ret,
+                "volatility": port_vol,
+                "risk_free": rf_now,
+            },
+            "expected_returns": expected_returns,
+            "summary": summary,
+            "warnings": input_warnings,
             "applied_scenarios": applied
         }
 
-    def run_monte_carlo(self, mu, sigma, days=252, n_sims=5000):
+    def run_monte_carlo(self, mu, sigma, days=252, n_sims=5000, n_samples=3, seed=42):
+        # Seeded RNG for reproducible projections.
+        rng = np.random.default_rng(seed)
         dt = 1 / 252
         paths = np.zeros((days, n_sims))
         paths[0] = 100
         for t in range(1, days):
-            z = np.random.standard_normal(n_sims)
+            z = rng.standard_normal(n_sims)
             paths[t] = paths[t - 1] * np.exp((mu - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * z)
 
-        random_indices = np.random.choice(n_sims, 5, replace=False)
+        # Sample exactly the number of spaghetti paths the UI renders.
+        n_samples = int(min(n_samples, n_sims))
+        random_indices = rng.choice(n_sims, n_samples, replace=False)
         sample_paths = paths[:, random_indices].T.tolist()
 
         return {
@@ -314,14 +444,57 @@ class BLEngine:
     def run_backtest(self, start_date: str, end_date: str, user_views: list, initial_capital=10000.0):
         full_slice = self.asset_prices
         try:
-            req_start_idx = full_slice.index.get_indexer([pd.Timestamp(start_date)], method='nearest')[0]
-        except:
+            ts_start = pd.Timestamp(start_date)
+            ts_end = pd.Timestamp(end_date)
+        except Exception:
+            return {"error": "Invalid date format. Please use YYYY-MM-DD."}
+        if ts_start >= ts_end:
+            return {"error": "Start date must be before end date."}
+        try:
+            req_start_idx = full_slice.index.get_indexer([ts_start], method='nearest')[0]
+        except Exception:
             return {"error": "Invalid start date"}
 
         start_idx = TRAIN_WINDOW
         while start_idx < req_start_idx:
             start_idx += REBALANCE_FREQ
-        if start_idx < TRAIN_WINDOW: start_idx = TRAIN_WINDOW
+        if start_idx < TRAIN_WINDOW:
+            start_idx = TRAIN_WINDOW
+
+        # Validate user views once up front and collect human-readable warnings
+        # (instead of silently clamping out-of-range inputs inside the loop).
+        input_warnings = []
+        valid_tickers = set(self.tickers)
+        for v in user_views:
+            t = v.get('ticker')
+            if t not in valid_tickers:
+                input_warnings.append(
+                    f"Ignored unknown ticker '{t}'. Valid tickers: {', '.join(self.tickers)}."
+                )
+                continue
+            raw_val = float(v['value'])
+            raw_conf = float(v['confidence'])
+            if clamp(raw_val, -MANUAL_EXTRA_CAP, MANUAL_EXTRA_CAP) != raw_val:
+                input_warnings.append(
+                    f"{t}: excess return {raw_val:.1%} will be capped to "
+                    f"\u00b1{MANUAL_EXTRA_CAP:.0%}."
+                )
+            if clamp(raw_conf, CONF_CAP_LO, CONF_CAP_HI) != raw_conf:
+                input_warnings.append(
+                    f"{t}: confidence {raw_conf:.0%} will be capped to "
+                    f"{CONF_CAP_LO:.0%}-{CONF_CAP_HI:.0%}."
+                )
+            sd = v.get('start_date')
+            ed = v.get('end_date')
+            if sd and ed:
+                try:
+                    if pd.Timestamp(sd) > pd.Timestamp(ed):
+                        input_warnings.append(
+                            f"{t}: view start date is after its end date; "
+                            f"this view may never apply."
+                        )
+                except Exception:
+                    input_warnings.append(f"{t}: could not parse the view's date range.")
 
         ml_rows = []
         ml_model = None
@@ -329,9 +502,9 @@ class BLEngine:
 
         portfolio_returns_history = []
         spy_returns_history = []
-        
+
         # --- Store tuple of (Date, Weights) ---
-        weights_snapshots = [] 
+        weights_snapshots = []
 
         prev_weights = pd.Series(0.0, index=self.tickers)
         prev_delta = None
@@ -341,14 +514,18 @@ class BLEngine:
             train_mkt = self.market_prices.loc[train_prices.index]
 
             test_end = min(i + REBALANCE_FREQ, len(full_slice))
-            if full_slice.index[i] > pd.Timestamp(end_date): break
+            if full_slice.index[i] > pd.Timestamp(end_date):
+                break
 
             test_prices = full_slice.iloc[i:test_end]
             test_mkt = self.market_prices.loc[test_prices.index]
 
-            if test_prices.shape[0] < 2: break
+            if test_prices.shape[0] < 2:
+                break
 
             current_date = train_prices.index[-1]
+            period_date = test_prices.index[0]
+            rf_now = self._annual_rf(current_date)
 
             vol_regime, _, _ = detect_vol_regime(self.market_prices, current_date)
             S, delta, pi, w_anchor = get_equilibrium_from_anchor(train_prices, train_mkt, prev_delta)
@@ -381,30 +558,37 @@ class BLEngine:
                     p_mom = float(ml_model.predict_proba(X_now)[0, 1])
                     mom_weight_override = clamp(0.25 + 0.60 * p_mom, 0.25, 0.85)
 
-                    print(f"🤖 AI ACTIVE | Date: {current_date.date()} | Training Data: {len(X_train)} rows | Prediction: Momentum has {p_mom:.1%} chance of working")
+                    logger.info("AI ACTIVE | Date: %s | Training Data: %d rows | Prediction: Momentum has %.1f%% chance of working", current_date.date(), len(X_train), p_mom * 100)
 
             is_conc, _, _, _ = detect_concentration_regime(train_prices)
-            max_w = 0.40 if is_conc else 0.30
-            if is_conc and mom_weight_override: mom_weight_override = clamp(mom_weight_override + CONC_MOM_BONUS, 0.25, 0.90)
+            max_w = CONC_MAX_WEIGHT if is_conc else MAX_WEIGHT
+            if is_conc and mom_weight_override:
+                mom_weight_override = clamp(mom_weight_override + CONC_MOM_BONUS, 0.25, 0.90)
 
             view_dict, conf_series, _, _, _ = generate_dynamic_views(train_prices, pi, train_mkt, vol_regime, mom_weight_override)
 
+            # Apply user views, honoring each view's optional [start_date, end_date]
+            # window so the per-view date controls in the UI actually take effect.
             for v in user_views:
                 t = v['ticker']
-                if t in self.tickers:
-                    extra = float(clamp(v['value'], -MANUAL_EXTRA_CAP, MANUAL_EXTRA_CAP))
-                    conf = float(clamp(v['confidence'], CONF_CAP_LO, CONF_CAP_HI))
-                    view_dict[t] = float(pi[t]) + extra
-                    conf_series[t] = conf
+                if t not in self.tickers:
+                    continue
+                sd = v.get('start_date')
+                ed = v.get('end_date')
+                if sd and period_date < pd.Timestamp(sd):
+                    continue
+                if ed and period_date > pd.Timestamp(ed):
+                    continue
+                extra = float(clamp(v['value'], -MANUAL_EXTRA_CAP, MANUAL_EXTRA_CAP))
+                conf = float(clamp(v['confidence'], CONF_CAP_LO, CONF_CAP_HI))
+                view_dict[t] = float(pi[t]) + extra
+                conf_series[t] = conf
 
-            weights = optimize_bl_portfolio(S, pi, view_dict, conf_series, delta, self.tickers, w_anchor, max_w)
+            weights, _, _ = optimize_bl_portfolio(
+                S, pi, view_dict, conf_series, delta, self.tickers, w_anchor, max_w, risk_free_rate=rf_now
+            )
 
             w_aligned = weights.reindex(self.tickers).fillna(0.0)
-            
-            # --- Store weights with explicit date ---
-            weights_active_date = test_prices.index[0]
-            weights_snapshots.append((weights_active_date, w_aligned))
-            # ---------------------------------------------
 
             prev_aligned = prev_weights.reindex(self.tickers).fillna(0.0)
             turnover = np.abs(w_aligned - prev_aligned).sum() / 2.0
@@ -416,6 +600,10 @@ class BLEngine:
                 skipped = True
             else:
                 prev_weights = w_aligned
+
+            # --- Store the weights ACTUALLY held this period (after the skip
+            # decision), so the "Top Holdings" report matches reality. ---
+            weights_snapshots.append((period_date, w_aligned))
 
             period_rel = test_prices.div(test_prices.iloc[0])
             period_val = period_rel.dot(w_aligned)
@@ -442,45 +630,58 @@ class BLEngine:
                     "spy_vol_6m": spy_vol_6m if np.isfinite(spy_vol_6m) else 0.0,
                     "label_momentum_works": label
                 })
-                    
-        if not portfolio_returns_history: return {"error": "No simulation data generated"}
+
+        if not portfolio_returns_history:
+            return {"error": "No simulation data generated"}
 
         full_port_rets = pd.concat(portfolio_returns_history)
         full_spy_rets = pd.concat(spy_returns_history)
+
+        # --- Defensive volatility-targeting overlay (optional) ---
+        # Scale daily exposure so trailing realized vol ~ VOL_TARGET, parking the
+        # rest at the risk-free rate. Lagged one day (no look-ahead). This is the
+        # validated crash-defense overlay; set VOL_TARGET = None above to disable.
+        if VOL_TARGET is not None:
+            realized_vol = full_port_rets.rolling(VOL_TARGET_LOOKBACK).std() * np.sqrt(252)
+            exposure = (VOL_TARGET / realized_vol).shift(1).clip(EXPOSURE_FLOOR, EXPOSURE_CAP).fillna(EXPOSURE_CAP)
+            rf_overlay = self.rf_daily.reindex(full_port_rets.index).fillna(0.0)
+            full_port_rets = exposure * full_port_rets + (1 - exposure) * rf_overlay
 
         port_curve = (1 + full_port_rets).cumprod() * initial_capital
         spy_curve = (1 + full_spy_rets).cumprod() * initial_capital
 
         df_res = pd.DataFrame({'Portfolio': port_curve, 'SPY': spy_curve})
-        yearly_res = df_res.resample('Y').last().pct_change().dropna()
-        
+        # 'YE' (year-end) replaces deprecated 'Y' alias in pandas >= 2.2.
+        year_end_vals = df_res.resample('YE').last()
+        # Prepend the starting capital (dated just before inception) so the
+        # first partial year is measured from inception instead of being
+        # silently dropped by pct_change().
+        start_row = pd.DataFrame(
+            {'Portfolio': initial_capital, 'SPY': initial_capital},
+            index=[df_res.index[0] - pd.Timedelta(days=1)],
+        )
+        yearly_res = pd.concat([start_row, year_end_vals]).pct_change().dropna()
+
         yearly_table = []
-        
+
         # --- FAILSAFE WEIGHT MATCHING LOGIC ---
         for dt, row in yearly_res.iterrows():
             year_int = dt.year
-            
+
             # 1. Collect all weight snapshots that happened during this year
             weights_in_year = []
             for (w_date, w_series) in weights_snapshots:
                 if w_date.year == year_int:
                     weights_in_year.append(w_series)
-            
+
             # Default text
             holdings_str = "Balanced"
-            
+
             # 2. If we found any weights for this year, average them and format
             if weights_in_year:
-                # Convert list of series to DataFrame to mean() easily
                 avg_weights = pd.DataFrame(weights_in_year).mean()
-                
-                # Sort descending
                 top_3 = avg_weights.sort_values(ascending=False).head(3)
-                
-                # Create string parts only if weight > 1%
                 parts = [f"{t}({w:.0%})" for t, w in top_3.items() if w > 0.01]
-                
-                # Only overwrite if we actually generated string parts
                 if parts:
                     holdings_str = " ".join(parts)
 
@@ -494,27 +695,52 @@ class BLEngine:
         # --------------------------------------
 
         rets = df_res.pct_change().dropna()
-        sharpe_port = (rets['Portfolio'].mean() * 252) / (rets['Portfolio'].std() * np.sqrt(252))
-        sharpe_spy = (rets['SPY'].mean() * 252) / (rets['SPY'].std() * np.sqrt(252))
+        # Excess (risk-free-adjusted) Sharpe, using the average ^IRX yield over the window.
+        rf_window = self.rf_daily.reindex(df_res.index).ffill().dropna()
+        rf_ann = float(rf_window.mean() * 252) if not rf_window.empty else DEFAULT_RF
+
+        def _sharpe(col):
+            ann_ret = rets[col].mean() * 252
+            ann_vol = rets[col].std() * np.sqrt(252)
+            if not np.isfinite(ann_vol) or ann_vol == 0:
+                return 0.0
+            val = (ann_ret - rf_ann) / ann_vol
+            return float(val) if np.isfinite(val) else 0.0
+
+        sharpe_port = _sharpe('Portfolio')
+        sharpe_spy = _sharpe('SPY')
         dd_port = calc_max_drawdown(df_res['Portfolio'])
         dd_spy = calc_max_drawdown(df_res['SPY'])
         vol_port = rets['Portfolio'].std() * np.sqrt(252)
         vol_spy = rets['SPY'].std() * np.sqrt(252)
+
+        total_return = (port_curve.iloc[-1] / initial_capital) - 1
+        spy_total_return = (spy_curve.iloc[-1] / initial_capital) - 1
+        verb = "outperformed" if total_return >= spy_total_return else "underperformed"
+        summary = (
+            f"From {df_res.index[0].date()} to {df_res.index[-1].date()}, the strategy "
+            f"returned {total_return:.1%} versus {spy_total_return:.1%} for SPY - it {verb} "
+            f"the benchmark by {abs(total_return - spy_total_return):.1%}. Risk-adjusted, its "
+            f"Sharpe was {sharpe_port:.2f} (SPY {sharpe_spy:.2f}) with a max drawdown of "
+            f"{dd_port:.1%} (SPY {dd_spy:.1%})."
+        )
 
         return {
             "dates": [str(d.date()) for d in df_res.index],
             "portfolio": df_res['Portfolio'].tolist(),
             "spy": df_res['SPY'].tolist(),
             "metrics": {
-                "total_return": (port_curve.iloc[-1] / initial_capital) - 1,
-                "spy_total_return": (spy_curve.iloc[-1] / initial_capital) - 1,
-                "sharpe": sharpe_port if np.isfinite(sharpe_port) else 0.0,
-                "spy_sharpe": sharpe_spy if np.isfinite(sharpe_spy) else 0.0,
+                "total_return": total_return,
+                "spy_total_return": spy_total_return,
+                "sharpe": sharpe_port,
+                "spy_sharpe": sharpe_spy,
                 "max_dd": dd_port,
                 "spy_max_dd": dd_spy,
                 "volatility": vol_port,
-                "spy_volatility": vol_spy
+                "spy_volatility": vol_spy,
+                "risk_free": rf_ann
             },
-            "yearly_table": yearly_table
+            "yearly_table": yearly_table,
+            "summary": summary,
+            "warnings": input_warnings
         }
-

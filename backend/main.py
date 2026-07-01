@@ -1,3 +1,6 @@
+import os
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,26 +11,43 @@ from app import data_loader       # Changed from . import data_loader
 from app.engine import BLEngine   # Changed from .engine import BLEngine
 # ---------------------
 
-app = FastAPI(title="Black-Litterman API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 bl_engine = None
 
 
-@app.on_event("startup")
-def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Modern FastAPI startup/shutdown handling (replaces deprecated on_event).
     global bl_engine
-    print("Loading data...")
+    logger.info("Loading data...")
     prices = data_loader.load_data()
     bl_engine = BLEngine(prices)
-    print("Engine initialized.")
+    logger.info("Engine initialized.")
+    yield
+    # (no shutdown work required)
+
+
+app = FastAPI(title="Black-Litterman API", lifespan=lifespan)
+
+# --- CORS ---
+# This API uses no cookies/auth, so credentials are disabled. A wildcard origin
+# is only valid when credentials are off. Restrict origins in production by
+# setting ALLOWED_ORIGINS (comma-separated) in the environment.
+_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()] or ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # --- UPDATED DATA MODELS ---
@@ -35,8 +55,8 @@ class View(BaseModel):
     ticker: str
     value: float
     confidence: float
-    start_date: Optional[str] = None  # NEW: Optional Start Date
-    end_date: Optional[str] = None  # NEW: Optional End Date
+    start_date: Optional[str] = None  # Optional Start Date (applied in backtest)
+    end_date: Optional[str] = None  # Optional End Date (applied in backtest)
 
 
 class ScenarioRequest(BaseModel):
@@ -84,6 +104,8 @@ def run_scenario(request: ScenarioRequest):
 
 @app.post("/simulation/monte_carlo")
 def run_monte_carlo(request: MonteCarloRequest):
+    if not bl_engine:
+        raise HTTPException(status_code=503, detail="Engine not ready")
     return bl_engine.run_monte_carlo(request.mu, request.sigma, request.days)
 
 

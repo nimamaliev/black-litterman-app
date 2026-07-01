@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import axios from 'axios';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Play, Activity, Calendar, Plus, TrendingUp, AlertTriangle, HelpCircle } from 'lucide-react';
+import { API_BASE } from '../config';
+import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { Play, Activity, Calendar, Plus, TrendingUp, AlertTriangle, HelpCircle, Info } from 'lucide-react';
 
 const SECTOR_MAP = Object.keys({'XLK':1,'XLF':1,'XLE':1,'XLV':1,'XLI':1,'XLC':1,'XLP':1,'XLU':1,'XLY':1,'XLB':1,'XLRE':1});
 
@@ -29,7 +30,8 @@ export default function Backtest() {
         alert("Start date must be before end date");
         return;
     }
-    setViews([...views, { ...newView }]);
+    // Give each view a stable unique id so React keys don't depend on the array index.
+    setViews([...views, { ...newView, id: (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`) }]);
   };
 
   const removeView = (i) => {
@@ -38,15 +40,12 @@ export default function Backtest() {
 
   const runBacktest = () => {
     setLoading(true);
-    axios.post('https://blai-dwb1.onrender.com/simulation/backtest', {
+    axios.post(`${API_BASE}/simulation/backtest`, {
       start_date: startDate,
       end_date: endDate,
       views: views
     })
     .then(res => {
-      // --- DEBUG LINE: Check if 'top_holdings' exists in the response ---
-      console.log("Backtest Data Received:", res.data.yearly_table); 
-      // ------------------------------------------------------------------
       const points = res.data.dates.map((date, i) => ({
         date,
         Portfolio: parseFloat(res.data.portfolio[i].toFixed(0)),
@@ -57,10 +56,26 @@ export default function Backtest() {
     })
     .catch(err => {
       console.error(err);
-      alert("Error running backtest.");
+      const detail = err?.response?.data?.detail;
+      alert(detail ? `Backtest error: ${detail}` : "Error running backtest.");
       setLoading(false);
     });
   };
+
+  const ddPoints = result
+    ? (() => {
+        let pMax = -Infinity, sMax = -Infinity;
+        return result.points.map(pt => {
+          pMax = Math.max(pMax, pt.Portfolio);
+          sMax = Math.max(sMax, pt.SPY);
+          return {
+            date: pt.date,
+            Portfolio: +((pt.Portfolio / pMax - 1) * 100).toFixed(2),
+            SPY: +((pt.SPY / sMax - 1) * 100).toFixed(2),
+          };
+        });
+      })()
+    : [];
 
   return (
     <div className="max-w-7xl mx-auto space-y-8 animate-fade-in pb-12">
@@ -94,11 +109,11 @@ export default function Backtest() {
              </div>
              <div className="col-span-1">
                <label className="text-[10px] text-slate-500 font-bold block mb-1">Excess</label>
-               <input type="number" step="0.01" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" value={newView.value} onChange={e => setNewView({...newView, value: parseFloat(e.target.value)})}/>
+               <input type="number" step="0.01" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" value={newView.value} onChange={e => setNewView({...newView, value: (parseFloat(e.target.value) || 0)})}/>
              </div>
              <div className="col-span-1">
                <label className="text-[10px] text-slate-500 font-bold flex items-center gap-1 mb-1">Conf <HelpCircle size={8}/></label>
-               <input type="number" step="0.1" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" value={newView.confidence} onChange={e => setNewView({...newView, confidence: parseFloat(e.target.value)})}/>
+               <input type="number" step="0.1" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" value={newView.confidence} onChange={e => setNewView({...newView, confidence: (parseFloat(e.target.value) || 0)})}/>
              </div>
              <div className="col-span-1">
                 <label className="text-[10px] text-slate-500 font-bold block mb-1">Start (Opt)</label>
@@ -115,7 +130,7 @@ export default function Backtest() {
 
           <div className="flex flex-wrap gap-2">
             {views.map((v, i) => (
-              <span key={i} className="bg-slate-900 border border-slate-700 px-3 py-1 rounded-full text-xs text-white flex items-center gap-2">
+              <span key={v.id} className="bg-slate-900 border border-slate-700 px-3 py-1 rounded-full text-xs text-white flex items-center gap-2">
                 <span className="font-bold text-blue-400">{v.ticker}</span>
                 <span>{(v.value > 0 ? "+" : "")}{(v.value*100).toFixed(0)}%</span>
                 <span className="text-slate-500 text-[10px]">
@@ -137,6 +152,22 @@ export default function Backtest() {
       {/* RESULTS */}
       {result && (
         <div className="space-y-8 animate-fade-in">
+          {result.summary && (
+            <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 flex items-start gap-3">
+              <Info size={18} className="text-blue-400 shrink-0 mt-0.5" />
+              <p className="text-sm text-slate-300 leading-relaxed">{result.summary}</p>
+            </div>
+          )}
+          {result.warnings && result.warnings.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 space-y-1">
+              <div className="flex items-center gap-2 text-amber-400 text-xs font-bold uppercase">
+                <AlertTriangle size={14} /> Input adjustments
+              </div>
+              <ul className="text-xs text-amber-200/90 list-disc list-inside space-y-0.5">
+                {result.warnings.map((w, idx) => <li key={idx}>{w}</li>)}
+              </ul>
+            </div>
+          )}
           {/* METRICS GRID */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
@@ -169,11 +200,28 @@ export default function Backtest() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                 <XAxis dataKey="date" stroke="#94a3b8" tickFormatter={(s)=>s.substring(0,4)}/>
                 <YAxis stroke="#94a3b8" tickFormatter={(v)=>`$${v/1000}k`}/>
-                <Tooltip contentStyle={{backgroundColor:'#0f172a', borderColor:'#334155'}} formatter={(v)=>`$${v.toLocaleString()}`}/>
+                <Tooltip contentStyle={ { backgroundColor:'#0f172a', borderColor:'#334155' } } formatter={(v)=>`$${v.toLocaleString()}`}/>
                 <Legend />
                 <Line type="monotone" dataKey="Portfolio" stroke="#2dd4bf" strokeWidth={3} dot={false} />
                 <Line type="monotone" dataKey="SPY" stroke="#64748b" strokeWidth={2} dot={false} strokeDasharray="5 5" />
               </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* DRAWDOWN CHART */}
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 h-[300px]">
+            <h3 className="text-white font-bold mb-1">Drawdown</h3>
+            <p className="text-xs text-slate-500 mb-4">How far each strategy fell below its own previous peak (%). Closer to 0 is better.</p>
+            <ResponsiveContainer width="100%" height="80%">
+              <AreaChart data={ddPoints}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="date" stroke="#94a3b8" tickFormatter={(s)=>s.substring(0,4)}/>
+                <YAxis stroke="#94a3b8" tickFormatter={(v)=>`${v}%`}/>
+                <Tooltip contentStyle={ { backgroundColor:'#0f172a', borderColor:'#334155' } } formatter={(v)=>`${v}%`}/>
+                <Legend />
+                <Area type="monotone" dataKey="Portfolio" stroke="#f87171" fill="#f87171" fillOpacity={0.25} />
+                <Area type="monotone" dataKey="SPY" stroke="#64748b" fill="#64748b" fillOpacity={0.15} />
+              </AreaChart>
             </ResponsiveContainer>
           </div>
 
@@ -212,4 +260,3 @@ export default function Backtest() {
     </div>
   )
 }
-

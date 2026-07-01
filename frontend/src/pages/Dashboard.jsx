@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
+import { API_BASE } from '../config'
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
-  AreaChart, Area, Line, XAxis, YAxis, CartesianGrid
+  AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, BarChart, Bar
 } from 'recharts'
 import {
   Shield, Activity, Calendar, Plus, ArrowRightLeft,
@@ -36,6 +37,8 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("simple");
   const [newView, setNewView] = useState({ ticker: 'XLK', value: 0.05, confidence: 0.50 });
   const [pairView, setPairView] = useState({ assetA: 'XLK', assetB: 'XLE', diff: 0.05, confidence: 0.50 });
+  const [error, setError] = useState(null);
+  const [mcLoading, setMcLoading] = useState(false);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -44,14 +47,20 @@ export default function Dashboard() {
   const runScenario = () => {
     const payload = { views: scenarioViews, date: targetDate || null };
     setLoading(true);
-    axios.post('https://blai-dwb1.onrender.com/recommendation/scenario', payload)
+    setError(null);
+    axios.post(`${API_BASE}/recommendation/scenario`, payload)
       .then(res => { setData(res.data); setLoading(false); setMcData(null); })
-      .catch(err => { console.error(err); setLoading(false); });
+      .catch(err => {
+        console.error(err);
+        setLoading(false);
+        setError("Could not reach the engine. The server may be waking up from sleep (cold start can take ~60s). Please retry in a moment.");
+      });
   };
 
   const runMonteCarlo = () => {
     if (!data) return;
-    axios.post('https://blai-dwb1.onrender.com/simulation/monte_carlo', {
+    setMcLoading(true);
+    axios.post(`${API_BASE}/simulation/monte_carlo`, {
       mu: data.metrics.expected_return,
       sigma: data.metrics.volatility,
       days: 252
@@ -82,6 +91,10 @@ export default function Dashboard() {
         final_high: res.data.p95[res.data.p95.length - 1],
         count: res.data.simulation_count || 5000
       });
+      setMcLoading(false);
+    }).catch(err => {
+      console.error(err);
+      setMcLoading(false);
     });
   };
 
@@ -94,7 +107,15 @@ export default function Dashboard() {
   const applyTemplate = (key) => key && setScenarioViews([...TEMPLATES[key].views]);
   const removeView = (i) => { const u = [...scenarioViews]; u.splice(i, 1); setScenarioViews(u); };
 
-  if (loading || !data) return <div className="flex items-center justify-center h-screen text-blue-400 font-mono animate-pulse">Initializing Neural Engine...</div>;
+  if (error && !data) return (
+    <div className="flex flex-col items-center justify-center h-screen text-center px-6">
+      <AlertTriangle className="text-red-400 mb-4" size={40} />
+      <p className="text-slate-300 max-w-md mb-6">{error}</p>
+      <button onClick={runScenario} className="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded-md text-white font-bold transition">Retry</button>
+    </div>
+  );
+
+  if (loading || !data) return <div className="flex items-center justify-center h-screen text-blue-400 font-mono animate-pulse">Calibrating defensive allocation...</div>;
 
   const sortedSectors = Object.entries(data.weights).sort((a, b) => b[1] - a[1]);
   const chartData = sortedSectors.filter(([_, v]) => v > 0.001).map(([n, v]) => ({ name: n, fullName: SECTOR_MAP[n], value: v }));
@@ -105,7 +126,15 @@ export default function Dashboard() {
     weight: data.weights[ticker] || 0
   })).sort((a, b) => b.weight - a.weight);
 
-  const sharpe = (data.metrics.expected_return / (data.metrics.volatility + 0.0001)).toFixed(2);
+  const sharpe = ((data.metrics.expected_return - data.metrics.risk_free) / (data.metrics.volatility + 0.0001)).toFixed(2);
+
+  const erData = data.expected_returns
+    ? Object.keys(SECTOR_MAP).map(t => ({
+        name: t,
+        Prior: +((data.expected_returns.prior[t] || 0) * 100).toFixed(2),
+        Posterior: +((data.expected_returns.posterior[t] || 0) * 100).toFixed(2),
+      }))
+    : [];
 
   return (
     <div className="space-y-8 animate-fade-in pb-12">
@@ -113,7 +142,7 @@ export default function Dashboard() {
         {/* HEADER */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6">
           <div>
-            <h1 className="text-3xl md:text-4xl font-extrabold text-white">Model <span className="text-blue-500">Dashboard</span></h1>
+            <h1 className="text-3xl md:text-4xl font-extrabold text-white">Defensive <span className="text-blue-500">Allocation</span></h1>
             <p className="text-slate-500 mt-1 font-mono text-sm uppercase tracking-wider">Regime: {data.regime.volatility}</p>
           </div>
           <div className="flex items-center gap-3 bg-slate-800 p-2 pl-4 rounded-lg border border-slate-700 mt-4 md:mt-0 shadow-lg">
@@ -125,6 +154,57 @@ export default function Dashboard() {
              <button onClick={runScenario} className="bg-blue-600 p-2 rounded-md hover:bg-blue-500 transition"><Calendar size={18} /></button>
           </div>
         </header>
+
+        {/* AI SUMMARY + INPUT WARNINGS */}
+        {data.summary && (
+          <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 flex items-start gap-3">
+            <Info size={18} className="text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-sm text-slate-300 leading-relaxed">{data.summary}</p>
+          </div>
+        )}
+        {data.warnings && data.warnings.length > 0 && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 space-y-1">
+            <div className="flex items-center gap-2 text-amber-400 text-xs font-bold uppercase">
+              <AlertTriangle size={14} /> Input adjustments
+            </div>
+            <ul className="text-xs text-amber-200/90 list-disc list-inside space-y-0.5">
+              {data.warnings.map((w, idx) => <li key={idx}>{w}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {/* DEFENSIVE EXPOSURE */}
+        {data.exposure && (
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Shield size={18} className="text-blue-400" />
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider">Defensive Exposure</h3>
+              </div>
+              <p className="text-xs text-slate-400">
+                {data.exposure.invested >= 0.99
+                  ? "Calm regime - fully invested"
+                  : "Risk elevated - holding cash for protection"}
+              </p>
+            </div>
+            <div className="flex h-7 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-700">
+              <div className="bg-blue-600 flex items-center justify-center text-xs font-bold text-white transition-all"
+                   style={ { width: `${Math.max(data.exposure.invested * 100, 6)}%` } }>
+                {(data.exposure.invested * 100).toFixed(0)}%
+              </div>
+              {data.exposure.cash > 0.001 && (
+                <div className="bg-slate-600 flex items-center justify-center text-xs font-bold text-slate-200 transition-all"
+                     style={ { width: `${data.exposure.cash * 100}%` } }>
+                  {(data.exposure.cash * 100).toFixed(0)}%
+                </div>
+              )}
+            </div>
+            <div className="flex justify-between mt-2 text-[11px] uppercase font-bold tracking-wider">
+              <span className="text-blue-400">Invested in sectors</span>
+              <span className="text-slate-400">Cash buffer</span>
+            </div>
+          </div>
+        )}
 
         {/* TOP ROW */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -162,7 +242,7 @@ export default function Dashboard() {
                  {legendData.map((item, idx) => (
                    <div key={item.ticker} className="flex justify-between items-center text-sm hover:bg-slate-700/30 p-1 rounded">
                      <div className="flex items-center gap-2">
-                       <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.weight > 0 ? COLORS[idx % COLORS.length] : '#334155' }}></div>
+                       <div className="w-2 h-2 rounded-full" style={ { backgroundColor: item.weight > 0 ? COLORS[idx % COLORS.length] : '#334155' } }></div>
                        <span className={item.weight > 0 ? "text-white font-medium" : "text-slate-500"}>{item.ticker}</span>
                        <span className="text-xs text-slate-500 hidden xl:block truncate max-w-[80px]">- {item.name}</span>
                      </div>
@@ -194,7 +274,7 @@ export default function Dashboard() {
                 >
                   {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
                 </Pie>
-                <Tooltip contentStyle={{backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#fff'}} formatter={(val, name, props) => [`${(val*100).toFixed(1)}%`, props.payload.fullName]} />
+                <Tooltip contentStyle={ { backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#fff' } } formatter={(val, name, props) => [`${(val*100).toFixed(1)}%`, props.payload.fullName]} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -228,13 +308,13 @@ export default function Dashboard() {
                          <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 flex items-center gap-1">
                            Excess Return <span title="Outperformance (0.05 = 5%)" className="cursor-help"><HelpCircle size={10} /></span>
                          </label>
-                         <input type="number" step="0.01" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={newView.value} onChange={e => setNewView({...newView, value: parseFloat(e.target.value)})}/>
+                         <input type="number" step="0.01" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={newView.value} onChange={e => setNewView({...newView, value: (parseFloat(e.target.value) || 0)})}/>
                        </div>
                        <div className="col-span-3">
                          <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 flex items-center gap-1">
                            Confidence <span title="Certainty (0.1-1.0)" className="cursor-help"><HelpCircle size={10} /></span>
                          </label>
-                         <input type="number" step="0.1" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={newView.confidence} onChange={e => setNewView({...newView, confidence: parseFloat(e.target.value)})}/>
+                         <input type="number" step="0.1" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={newView.confidence} onChange={e => setNewView({...newView, confidence: (parseFloat(e.target.value) || 0)})}/>
                        </div>
                        <div className="col-span-2">
                          <button onClick={addSimpleView} className="w-full bg-blue-600 text-white p-2 rounded h-[38px] flex items-center justify-center hover:bg-blue-500 transition"><Plus size={16}/></button>
@@ -249,7 +329,7 @@ export default function Dashboard() {
                     <div className="grid grid-cols-12 gap-2 items-end">
                        <div className="col-span-3"><select className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={pairView.assetA} onChange={e => setPairView({...pairView, assetA: e.target.value})}>{Object.keys(SECTOR_MAP).map(t => <option key={t}>{t}</option>)}</select></div>
                        <div className="col-span-3"><select className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={pairView.assetB} onChange={e => setPairView({...pairView, assetB: e.target.value})}>{Object.keys(SECTOR_MAP).map(t => <option key={t}>{t}</option>)}</select></div>
-                       <div className="col-span-3"><input type="number" step="0.01" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={pairView.diff} onChange={e => setPairView({...pairView, diff: parseFloat(e.target.value)})}/></div>
+                       <div className="col-span-3"><input type="number" step="0.01" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white" value={pairView.diff} onChange={e => setPairView({...pairView, diff: (parseFloat(e.target.value) || 0)})}/></div>
                        <div className="col-span-3"><button onClick={addPairView} className="w-full bg-purple-600 text-white p-2 rounded text-xs font-bold hover:bg-purple-500 transition h-[38px]">Add Pair</button></div>
                     </div>
                  </div>
@@ -276,7 +356,7 @@ export default function Dashboard() {
 
                <div className="flex gap-3 mt-auto">
                  <button onClick={runScenario} className="flex-1 bg-slate-700 hover:bg-slate-600 py-3 rounded font-bold text-sm text-white transition">Update Allocation</button>
-                 <button onClick={runMonteCarlo} className="flex-1 bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-500 hover:to-teal-500 py-3 rounded font-bold text-sm text-white transition shadow-lg shadow-green-900/20">Run Monte Carlo</button>
+                 <button onClick={runMonteCarlo} disabled={mcLoading} className="flex-1 bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-500 hover:to-teal-500 py-3 rounded font-bold text-sm text-white transition shadow-lg shadow-green-900/20 disabled:opacity-60">{mcLoading ? "Running..." : "Run Monte Carlo"}</button>
                </div>
             </div>
 
@@ -303,8 +383,8 @@ export default function Dashboard() {
                           </linearGradient>
                         </defs>
                         <XAxis hide />
-                        <YAxis domain={['auto','auto']} width={35} tick={{fill:'#64748b', fontSize:10}} tickFormatter={(v)=>`$${v.toFixed(0)}`} />
-                        <Tooltip contentStyle={{backgroundColor:'#0f172a', borderColor:'#334155'}} formatter={(v)=>`$${v.toFixed(0)}`} labelFormatter={() => ''} />
+                        <YAxis domain={['auto','auto']} width={35} tick={ { fill:'#64748b', fontSize:10 } } tickFormatter={(v)=>`$${v.toFixed(0)}`} />
+                        <Tooltip contentStyle={ { backgroundColor:'#0f172a', borderColor:'#334155' } } formatter={(v)=>`$${v.toFixed(0)}`} labelFormatter={() => ''} />
 
                         {/* Outer Cone (5th - 95th) */}
                         <Area type="monotone" dataKey="p95" stroke="none" fill="#1e293b" fillOpacity={0.5} />
@@ -354,6 +434,25 @@ export default function Dashboard() {
                )}
             </div>
         </div>
+
+        {/* PRIOR VS POSTERIOR EXPECTED RETURNS */}
+        {erData.length > 0 && (
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-700">
+            <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wide mb-1">Prior vs Posterior Expected Returns</h2>
+            <p className="text-xs text-slate-500 mb-4">How your views shifted the market-implied (prior) returns into the model's posterior view, by sector (annualized %).</p>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={erData} margin={ { top: 10, right: 10, left: -10, bottom: 0 } }>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} />
+                <YAxis stroke="#94a3b8" fontSize={11} tickFormatter={(v)=>`${v}%`} />
+                <Tooltip contentStyle={ { backgroundColor:'#0f172a', borderColor:'#334155', borderRadius:'8px', color:'#fff' } } formatter={(v)=>`${v}%`} />
+                <Legend />
+                <Bar dataKey="Prior" fill="#64748b" radius={[3,3,0,0]} />
+                <Bar dataKey="Posterior" fill="#3b82f6" radius={[3,3,0,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
     </div>
   )
 
