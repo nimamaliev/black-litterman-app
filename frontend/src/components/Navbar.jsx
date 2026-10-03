@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard, History, BookOpen, HelpCircle, Layers, ChevronLeft,
+  LayoutDashboard, History, BookOpen, HelpCircle, Layers, ChevronLeft, Radio,
 } from 'lucide-react';
 
 // Per-strategy sub-navigation. Register future models here the same way.
@@ -11,6 +11,7 @@ const MODEL_NAV = {
     tabs: [
       { to: '/defensive', label: 'Dashboard', icon: LayoutDashboard, end: true },
       { to: '/defensive/backtest', label: 'Backtest Engine', icon: History },
+      { to: '/defensive/track-record', label: 'Live Record', icon: Radio },
       { to: '/defensive/info', label: 'Model Logic', icon: BookOpen },
       { to: '/defensive/how-to-use', label: 'User Guide', icon: HelpCircle },
     ],

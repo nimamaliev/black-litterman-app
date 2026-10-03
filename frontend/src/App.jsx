@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import Backtest from './pages/Backtest';
 import Info from './pages/Info';
 import HowToUse from './pages/HowToUse';
+import TrackRecord from './pages/TrackRecord';
 import GrowthDashboard from './pages/GrowthDashboard';
 import GrowthBacktest from './pages/GrowthBacktest';
 import GrowthInfo from './pages/GrowthInfo';
@@ -32,6 +33,7 @@ function App() {
             <Route path="/defensive/backtest" element={<Backtest />} />
             <Route path="/defensive/info" element={<Info />} />
             <Route path="/defensive/how-to-use" element={<HowToUse />} />
+            <Route path="/defensive/track-record" element={<TrackRecord />} />
 
             {/* Growth model: volatility-managed SPY */}
             <Route path="/growth" element={<GrowthDashboard />} />

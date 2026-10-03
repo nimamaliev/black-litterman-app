@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import threading
+import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -13,6 +14,7 @@ import uvicorn
 from app import data_loader       # Changed from . import data_loader
 from app.engine import BLEngine   # Changed from .engine import BLEngine
 from app.growth_engine import GrowthEngine
+from app import track_record
 # ---------------------
 
 logging.basicConfig(
@@ -42,6 +44,7 @@ def _refresh_engine_in_background():
         if data_loader.refresh_if_stale():
             fresh_prices = data_loader.read_prices()
             new_engine = BLEngine(fresh_prices)
+            _warm_engine(new_engine)
             new_growth = GrowthEngine(fresh_prices)
             bl_engine = new_engine  # atomic reference swaps
             growth_engine = new_growth
@@ -50,6 +53,13 @@ def _refresh_engine_in_background():
             logger.info("Background refresh complete; engine updated.")
     except Exception:
         logger.exception("Background data refresh failed; continuing with cached data.")
+
+
+def _warm_engine(engine):
+    try:
+        engine.run_scenario([])
+    except Exception:
+        logger.exception("Engine warm-up failed; it will build lazily instead.")
 
 
 @asynccontextmanager
@@ -67,6 +77,8 @@ async def lifespan(app: FastAPI):
         bl_engine = BLEngine(prices)
         growth_engine = GrowthEngine(prices)
         threading.Thread(target=_refresh_engine_in_background, daemon=True).start()
+    # Build the ML training set now so the first dashboard request is fast.
+    threading.Thread(target=_warm_engine, args=(bl_engine,), daemon=True).start()
     logger.info("Engine initialized.")
     yield
     # (no shutdown work required)
@@ -95,6 +107,7 @@ class View(BaseModel):
     ticker: str
     value: float
     confidence: float
+    versus: Optional[str] = None  # relative view: `ticker` beats `versus` by `value`
     start_date: Optional[str] = None  # Optional Start Date (applied in backtest)
     end_date: Optional[str] = None  # Optional End Date (applied in backtest)
 
@@ -121,13 +134,14 @@ class BacktestRequest(BaseModel):
     start_date: str
     end_date: str
     views: List[View]
+    overlay: bool = True  # apply the volatility-targeting overlay
 
 
 # --- ENDPOINTS ---
 
 @app.get("/")
 def read_root():
-    return {"status": "System Operational", "model": "Black-Litterman ML"}
+    return {"status": "System Operational", "model": "Black-Litterman"}
 
 
 @app.post("/recommendation/scenario")
@@ -156,7 +170,7 @@ def run_backtest(request: BacktestRequest):
 
     engine = bl_engine
     views = [v.dict() for v in request.views]
-    key = json.dumps([request.start_date, request.end_date, views], sort_keys=True)
+    key = json.dumps([request.start_date, request.end_date, views, request.overlay], sort_keys=True)
 
     with _backtest_lock:
         cached = _backtest_cache.get(key)
@@ -165,7 +179,7 @@ def run_backtest(request: BacktestRequest):
             return cached
 
     # Pass the full view dictionary (including dates) to the engine
-    result = engine.run_backtest(request.start_date, request.end_date, views)
+    result = engine.run_backtest(request.start_date, request.end_date, views, overlay=request.overlay)
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -177,6 +191,27 @@ def run_backtest(request: BacktestRequest):
             while len(_backtest_cache) > _BACKTEST_CACHE_MAX:
                 _backtest_cache.popitem(last=False)
 
+    return result
+
+
+# --- LIVE TRACK RECORD ---
+_TRACK_TTL_SECONDS = 3600
+_track_cache: Dict[str, Any] = {"at": 0.0, "engine": None, "value": None}
+
+
+@app.get("/track_record")
+def get_track_record():
+    """Forward performance of the recommendations recorded daily by the
+    track-record workflow (append-only, committed to the `track-record` branch)."""
+    if not bl_engine:
+        raise HTTPException(status_code=503, detail="Engine not ready")
+    engine = bl_engine
+    now = time.time()
+    if (_track_cache["value"] is not None and _track_cache["engine"] is engine
+            and now - _track_cache["at"] < _TRACK_TTL_SECONDS):
+        return _track_cache["value"]
+    result = track_record.evaluate(track_record.load_records(), engine)
+    _track_cache.update({"at": now, "engine": engine, "value": result})
     return result
 
 

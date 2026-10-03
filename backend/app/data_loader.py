@@ -14,7 +14,8 @@ PRICES_FILE = os.path.join(BASE_DIR, "data", "prices.parquet")
 # Your Tickers
 TICKERS = [
     "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
-    "SPY", "^IRX", "VNQ", "VOX"
+    "SPY", "^IRX", "VNQ", "VOX",
+    "IEF",  # 7-10y Treasuries, for the 60/40 benchmark
 ]
 START_DATE = "2005-01-01"
 
@@ -41,7 +42,7 @@ def ensure_data_freshness():
 
         # Fresh if the most recent data point is within tolerance (covers
         # weekends + holidays when no new market data is expected).
-        if staleness_days <= FRESHNESS_TOLERANCE_DAYS:
+        if staleness_days <= FRESHNESS_TOLERANCE_DAYS and not _missing_tickers(existing):
             logger.info("Data is fresh (Last date: %s, %dd old). Loading from cache.", last_data_date, staleness_days)
             return
         logger.info("Data is stale (Last date: %s, %dd old). Refreshing...", last_data_date, staleness_days)
@@ -116,6 +117,13 @@ def _save_cache(px):
         return False
 
 
+def _missing_tickers(df):
+    """Configured tickers that have no column in the cached frame."""
+    if df is None:
+        return list(TICKERS)
+    return [t for t in TICKERS if t not in df.columns]
+
+
 def _merge_frames(existing, fresh):
     """Combine cached + freshly downloaded prices, preferring fresh values on
     overlapping dates and keeping rows sorted by date."""
@@ -123,8 +131,9 @@ def _merge_frames(existing, fresh):
         return existing
     if existing is None or existing.empty:
         return fresh.sort_index()
-    combined = pd.concat([existing, fresh])
-    combined = combined[~combined.index.duplicated(keep="last")]
+    # combine_first keeps fresh values where present and lets columns that only
+    # exist on one side (e.g. a newly added ticker) through untouched.
+    combined = fresh.combine_first(existing)
     return combined.sort_index()
 
 
@@ -166,6 +175,20 @@ def _refresh_data(existing):
         return existing
 
     combined = _merge_frames(existing, fresh)
+
+    # 3) Tickers added to TICKERS after the cache was built only got the recent
+    # tail above; fetch their full history once.
+    missing_history = [t for t in TICKERS if existing is not None
+                       and t not in existing.columns]
+    if missing_history:
+        try:
+            logger.info("Backfilling full history for new tickers: %s", missing_history)
+            backfill = download_and_flatten(missing_history, START_DATE)
+            if backfill is not None and not backfill.empty:
+                combined = _merge_frames(combined, backfill)
+        except Exception as e:
+            logger.warning("Backfill for %s failed (%s).", missing_history, e)
+
     _save_cache(combined)
     return combined
 
@@ -186,13 +209,15 @@ def refresh_if_stale():
     existing = _read_cache()
     if existing is not None:
         staleness_days = (datetime.now().date() - existing.index.max().date()).days
-        if staleness_days <= FRESHNESS_TOLERANCE_DAYS:
+        if staleness_days <= FRESHNESS_TOLERANCE_DAYS and not _missing_tickers(existing):
             return False
     before = existing.index.max() if existing is not None else None
+    before_cols = set(existing.columns) if existing is not None else set()
     combined = _refresh_data(existing)
     if combined is None or combined.empty:
         return False
-    return before is None or combined.index.max() > before
+    return (before is None or combined.index.max() > before
+            or bool(set(combined.columns) - before_cols))
 
 
 def load_data():

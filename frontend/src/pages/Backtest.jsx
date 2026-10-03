@@ -11,8 +11,9 @@ export default function Backtest() {
   const [result, setResult] = useState(null);
 
   // Period Config
-  const [startDate, setStartDate] = useState("2006-01-01");
-  const [endDate, setEndDate] = useState("2026-01-06");
+  const [startDate, setStartDate] = useState("2007-01-01");
+  const [endDate, setEndDate] = useState(new Date().toISOString().split("T")[0]);
+  const [overlay, setOverlay] = useState(true);
 
   // View Config
   const [views, setViews] = useState([]);
@@ -43,7 +44,8 @@ export default function Backtest() {
     axios.post(`${API_BASE}/simulation/backtest`, {
       start_date: startDate,
       end_date: endDate,
-      views: views
+      views: views,
+      overlay: overlay
     })
     .then(res => {
       const points = res.data.dates.map((date, i) => ({
@@ -94,6 +96,10 @@ export default function Backtest() {
              <input type="date" className="bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" value={startDate} onChange={e => setStartDate(e.target.value)} />
              <input type="date" className="bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" value={endDate} onChange={e => setEndDate(e.target.value)} />
           </div>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+            <input type="checkbox" className="accent-blue-500" checked={overlay} onChange={e => setOverlay(e.target.checked)} />
+            Volatility overlay (move to cash when volatile)
+          </label>
         </div>
 
         {/* VIEWS BUILDER */}
@@ -191,6 +197,41 @@ export default function Backtest() {
               <p className="text-[10px] text-slate-500">SPY: {(result.metrics.spy_volatility * 100).toFixed(1)}%</p>
             </div>
           </div>
+
+          {/* BENCHMARKS */}
+          {result.benchmarks && result.benchmarks.length > 0 && (
+            <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-x-auto">
+              <div className="p-4 border-b border-slate-700">
+                <p className="font-bold text-white">Benchmark Comparison</p>
+                <p className="text-xs text-slate-500 mt-1">Same dates and the same 0.05% trading costs. If the model can&apos;t beat the simple alternatives after costs, its complexity isn&apos;t paying for itself.</p>
+              </div>
+              <table className="w-full text-sm text-left text-slate-300">
+                <thead className="text-xs text-slate-400 uppercase bg-slate-900/50">
+                  <tr>
+                    <th className="px-4 py-3">Strategy</th>
+                    <th className="px-4 py-3 text-right">CAGR</th>
+                    <th className="px-4 py-3 text-right">Volatility</th>
+                    <th className="px-4 py-3 text-right">Sharpe</th>
+                    <th className="px-4 py-3 text-right">Max DD</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.benchmarks.map((b, i) => (
+                    <tr key={b.name} className={`border-b border-slate-700 ${i === 0 ? "bg-blue-900/20" : ""}`}>
+                      <td className="px-4 py-3">
+                        <span className={i === 0 ? "font-bold text-white" : ""}>{b.name}</span>
+                        <span className="block text-[11px] text-slate-500">{b.note}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono">{(b.cagr * 100).toFixed(1)}%</td>
+                      <td className="px-4 py-3 text-right font-mono">{(b.volatility * 100).toFixed(1)}%</td>
+                      <td className="px-4 py-3 text-right font-mono">{b.sharpe.toFixed(2)}</td>
+                      <td className="px-4 py-3 text-right font-mono text-red-300">{(b.max_dd * 100).toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* CHART */}
           <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 h-[400px]">

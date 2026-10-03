@@ -20,13 +20,13 @@ const STRATEGIES = [
     accent: 'blue',
     icon: Shield,
     blurb:
-      'A sector-rotation Black-Litterman model with a volatility-targeting overlay that scales out of equities into cash when markets turn turbulent. Engineered to lose far less when it matters most.',
+      'A Black-Litterman sector model: it starts from the S&P 500\'s own sector mix, tilts it with low-volatility and momentum views, and a volatility-targeting overlay scales into cash when markets turn turbulent.',
     bestFor: 'Recessions \u00b7 bear markets \u00b7 high-volatility regimes',
     metrics: [
-      { label: 'Sharpe', value: '0.70' },
-      { label: 'Max Drawdown', value: '-15%' },
-      { label: 'CAGR', value: '8.6%' },
-      { label: 'GFC 2008', value: '-12%' },
+      { label: 'Sharpe (SPY 0.55)', value: '0.71' },
+      { label: 'Max DD (SPY -55%)', value: '-24%' },
+      { label: 'CAGR (SPY 10.9%)', value: '8.5%' },
+      { label: 'GFC 2008', value: '-22%' },
     ],
   },
   {
