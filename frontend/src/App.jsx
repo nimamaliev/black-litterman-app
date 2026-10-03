@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { API_BASE } from './config';
 import Navbar from './components/Navbar';
 import Hub from './pages/Hub';
 import Dashboard from './pages/Dashboard';
@@ -7,6 +9,12 @@ import Info from './pages/Info';
 import HowToUse from './pages/HowToUse';
 
 function App() {
+  // The free-tier backend sleeps when idle. Ping it as soon as the site opens so
+  // it is already waking up while the user reads the page, not on their first click.
+  useEffect(() => {
+    fetch(`${API_BASE}/`, { method: 'GET', mode: 'cors' }).catch(() => {});
+  }, []);
+
   return (
     <Router>
       <div className="min-h-screen bg-slate-900 text-slate-100 font-sans">

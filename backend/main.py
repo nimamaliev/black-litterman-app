@@ -1,5 +1,8 @@
 import os
+import json
 import logging
+import threading
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,14 +22,44 @@ logger = logging.getLogger(__name__)
 
 bl_engine = None
 
+# Backtests are deterministic for a given (dates, views) on a given engine, so
+# repeat requests are served from memory. Cleared whenever the engine is rebuilt.
+_BACKTEST_CACHE_MAX = 64
+_backtest_cache: "OrderedDict[str, dict]" = OrderedDict()
+_backtest_lock = threading.Lock()
+
+
+def _refresh_engine_in_background():
+    """Download any missing recent prices and swap in a fresh engine.
+
+    Startup serves the cached prices immediately; this runs afterwards so a
+    cold start is not blocked on Yahoo Finance.
+    """
+    global bl_engine
+    try:
+        if data_loader.refresh_if_stale():
+            new_engine = BLEngine(data_loader.read_prices())
+            bl_engine = new_engine  # atomic reference swap
+            with _backtest_lock:
+                _backtest_cache.clear()
+            logger.info("Background refresh complete; engine updated.")
+    except Exception:
+        logger.exception("Background data refresh failed; continuing with cached data.")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Modern FastAPI startup/shutdown handling (replaces deprecated on_event).
     global bl_engine
-    logger.info("Loading data...")
-    prices = data_loader.load_data()
-    bl_engine = BLEngine(prices)
+    logger.info("Loading cached data...")
+    prices = data_loader.read_prices()
+    if prices.empty:
+        # No cache at all: we have no choice but to download before serving.
+        prices = data_loader.load_data()
+        bl_engine = BLEngine(prices)
+    else:
+        bl_engine = BLEngine(prices)
+        threading.Thread(target=_refresh_engine_in_background, daemon=True).start()
     logger.info("Engine initialized.")
     yield
     # (no shutdown work required)
@@ -114,15 +147,28 @@ def run_backtest(request: BacktestRequest):
     if not bl_engine:
         raise HTTPException(status_code=503, detail="Engine not ready")
 
+    engine = bl_engine
+    views = [v.dict() for v in request.views]
+    key = json.dumps([request.start_date, request.end_date, views], sort_keys=True)
+
+    with _backtest_lock:
+        cached = _backtest_cache.get(key)
+        if cached is not None:
+            _backtest_cache.move_to_end(key)
+            return cached
+
     # Pass the full view dictionary (including dates) to the engine
-    result = bl_engine.run_backtest(
-        request.start_date,
-        request.end_date,
-        [v.dict() for v in request.views]
-    )
+    result = engine.run_backtest(request.start_date, request.end_date, views)
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
+
+    # Only cache if the engine wasn't swapped while we were computing.
+    with _backtest_lock:
+        if engine is bl_engine:
+            _backtest_cache[key] = result
+            while len(_backtest_cache) > _BACKTEST_CACHE_MAX:
+                _backtest_cache.popitem(last=False)
 
     return result
 

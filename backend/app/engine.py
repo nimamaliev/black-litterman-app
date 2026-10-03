@@ -174,12 +174,30 @@ def optimize_bl_portfolio(S, pi, view_dict, conf_series, delta, tickers, w_ancho
                                              view_confidences=conf_series, risk_aversion=delta)
     ret_bl = bl.bl_returns()
     S_bl = bl.bl_cov()
-    ef = EfficientFrontier(ret_bl, S_bl)
-    ef.add_constraint(lambda w: w <= max_weight_active)
-    ef.add_constraint(lambda w: w >= MIN_WEIGHT)
-    # Pass an explicit risk-free rate so the optimizer and our reported metrics agree.
-    ef.max_sharpe(risk_free_rate=risk_free_rate)
-    weights = pd.Series(ef.clean_weights()).reindex(tickers).fillna(0.0)
+    def _solve(objective):
+        ef = EfficientFrontier(ret_bl, S_bl)
+        ef.add_constraint(lambda w: w <= max_weight_active)
+        ef.add_constraint(lambda w: w >= MIN_WEIGHT)
+        if objective == "max_sharpe":
+            # Pass an explicit risk-free rate so the optimizer and our reported metrics agree.
+            ef.max_sharpe(risk_free_rate=risk_free_rate)
+        else:
+            ef.min_volatility()
+        return pd.Series(ef.clean_weights()).reindex(tickers).fillna(0.0)
+
+    # max_sharpe raises ValueError when no asset's expected return exceeds the
+    # risk-free rate (e.g. 2023, with ^IRX near 5%), and cvxpy can fail on
+    # degenerate problems. Fall back to min-volatility, then to the anchor, so a
+    # single bad rebalance date doesn't turn the whole request into a 500.
+    try:
+        weights = _solve("max_sharpe")
+    except Exception as exc:
+        logger.warning("max_sharpe failed (%s); falling back to min_volatility", exc)
+        try:
+            weights = _solve("min_volatility")
+        except Exception as exc2:
+            logger.warning("min_volatility failed (%s); falling back to anchor weights", exc2)
+            weights = w_anchor.reindex(tickers).fillna(0.0)
     return weights, ret_bl, S_bl
 
 

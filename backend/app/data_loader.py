@@ -175,6 +175,26 @@ def _download_and_save():
     _refresh_data(_read_cache())
 
 
+def read_prices():
+    """Return the cached prices as-is, with no network access (empty if no cache)."""
+    df = _read_cache()
+    return df if df is not None else pd.DataFrame()
+
+
+def refresh_if_stale():
+    """Update the cache if it is stale. Returns True when new data was written."""
+    existing = _read_cache()
+    if existing is not None:
+        staleness_days = (datetime.now().date() - existing.index.max().date()).days
+        if staleness_days <= FRESHNESS_TOLERANCE_DAYS:
+            return False
+    before = existing.index.max() if existing is not None else None
+    combined = _refresh_data(existing)
+    if combined is None or combined.empty:
+        return False
+    return before is None or combined.index.max() > before
+
+
 def load_data():
     """Returns the prices DataFrame."""
     ensure_data_freshness()
