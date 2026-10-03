@@ -33,13 +33,19 @@ const STRATEGIES = [
     key: 'growth',
     name: 'Growth',
     subtitle: 'Bull Market',
-    status: 'soon',
+    status: 'live',
+    to: '/growth',
     accent: 'green',
     icon: TrendingUp,
     blurb:
-      'An offense-oriented allocation built to capture upside in trending, low-volatility markets. Currently in development.',
+      'A volatility-managed S&P 500 strategy that leans into calm, rising markets with up to 1.5x exposure and steps back toward cash when volatility spikes. Built to out-compound buy-and-hold SPY. Uses leverage.',
     bestFor: 'Expansions \u00b7 bull markets \u00b7 risk-on regimes',
-    metrics: [],
+    metrics: [
+      { label: 'CAGR (SPY 11.1%)', value: '13.3%' },
+      { label: 'Sharpe (SPY 0.56)', value: '0.67' },
+      { label: 'Max DD (SPY -55%)', value: '-43%' },
+      { label: 'GFC 2008', value: '-28%' },
+    ],
   },
   {
     key: 'balanced',
@@ -114,7 +120,7 @@ export default function Hub() {
         </h1>
         <p className="text-lg text-slate-400">
           Each model is built for a different market environment. Pick the one that fits your
-          view \u2014 protect capital in a downturn, or chase growth in a boom.
+          view &mdash; protect capital in a downturn, or chase growth in a boom.
         </p>
       </header>
 
@@ -125,8 +131,10 @@ export default function Hub() {
       </div>
 
       <p className="text-center text-xs text-slate-600 max-w-2xl mx-auto">
-        Metrics are from a walk-forward backtest of US sector ETFs (2007\u20132026) and are
-        illustrative only. Past performance does not guarantee future results.
+        Defensive metrics are from a walk-forward backtest of US sector ETFs (2007&ndash;2026);
+        Growth metrics are from a backtest of SPY (2006&ndash;2026) with borrowing and trading
+        costs included. All figures are illustrative only. Past performance does not guarantee
+        future results.
       </p>
     </div>
   );

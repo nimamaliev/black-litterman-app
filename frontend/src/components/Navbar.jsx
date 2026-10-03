@@ -15,6 +15,15 @@ const MODEL_NAV = {
       { to: '/defensive/how-to-use', label: 'User Guide', icon: HelpCircle },
     ],
   },
+  growth: {
+    label: 'Growth',
+    base: '/growth',
+    tabs: [
+      { to: '/growth', label: 'Dashboard', icon: LayoutDashboard, end: true },
+      { to: '/growth/backtest', label: 'Backtest Engine', icon: History },
+      { to: '/growth/info', label: 'Model Logic', icon: BookOpen },
+    ],
+  },
 };
 
 export default function Navbar() {

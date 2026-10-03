@@ -12,6 +12,7 @@ import uvicorn
 # --- FIXED IMPORTS ---
 from app import data_loader       # Changed from . import data_loader
 from app.engine import BLEngine   # Changed from .engine import BLEngine
+from app.growth_engine import GrowthEngine
 # ---------------------
 
 logging.basicConfig(
@@ -21,6 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 bl_engine = None
+growth_engine = None
 
 # Backtests are deterministic for a given (dates, views) on a given engine, so
 # repeat requests are served from memory. Cleared whenever the engine is rebuilt.
@@ -35,11 +37,14 @@ def _refresh_engine_in_background():
     Startup serves the cached prices immediately; this runs afterwards so a
     cold start is not blocked on Yahoo Finance.
     """
-    global bl_engine
+    global bl_engine, growth_engine
     try:
         if data_loader.refresh_if_stale():
-            new_engine = BLEngine(data_loader.read_prices())
-            bl_engine = new_engine  # atomic reference swap
+            fresh_prices = data_loader.read_prices()
+            new_engine = BLEngine(fresh_prices)
+            new_growth = GrowthEngine(fresh_prices)
+            bl_engine = new_engine  # atomic reference swaps
+            growth_engine = new_growth
             with _backtest_lock:
                 _backtest_cache.clear()
             logger.info("Background refresh complete; engine updated.")
@@ -50,15 +55,17 @@ def _refresh_engine_in_background():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Modern FastAPI startup/shutdown handling (replaces deprecated on_event).
-    global bl_engine
+    global bl_engine, growth_engine
     logger.info("Loading cached data...")
     prices = data_loader.read_prices()
     if prices.empty:
         # No cache at all: we have no choice but to download before serving.
         prices = data_loader.load_data()
         bl_engine = BLEngine(prices)
+        growth_engine = GrowthEngine(prices)
     else:
         bl_engine = BLEngine(prices)
+        growth_engine = GrowthEngine(prices)
         threading.Thread(target=_refresh_engine_in_background, daemon=True).start()
     logger.info("Engine initialized.")
     yield
@@ -170,6 +177,59 @@ def run_backtest(request: BacktestRequest):
             while len(_backtest_cache) > _BACKTEST_CACHE_MAX:
                 _backtest_cache.popitem(last=False)
 
+    return result
+
+
+# --- GROWTH STRATEGY (volatility-managed SPY) ---
+class GrowthScenarioRequest(BaseModel):
+    date: Optional[str] = None
+    target_vol: float = 0.20
+    max_leverage: float = 1.5
+
+
+class GrowthBacktestRequest(BaseModel):
+    start_date: str
+    end_date: str
+    target_vol: float = 0.20
+    max_leverage: float = 1.5
+
+
+@app.post("/growth/scenario")
+def run_growth_scenario(request: GrowthScenarioRequest):
+    if not growth_engine:
+        raise HTTPException(status_code=503, detail="Engine not ready")
+    result = growth_engine.run_scenario(request.date, request.target_vol, request.max_leverage)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.post("/growth/backtest")
+def run_growth_backtest(request: GrowthBacktestRequest):
+    if not growth_engine:
+        raise HTTPException(status_code=503, detail="Engine not ready")
+
+    engine = growth_engine
+    key = "growth:" + json.dumps(
+        [request.start_date, request.end_date, request.target_vol, request.max_leverage]
+    )
+    with _backtest_lock:
+        cached = _backtest_cache.get(key)
+        if cached is not None:
+            _backtest_cache.move_to_end(key)
+            return cached
+
+    result = engine.run_backtest(
+        request.start_date, request.end_date, request.target_vol, request.max_leverage
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    with _backtest_lock:
+        if engine is growth_engine:
+            _backtest_cache[key] = result
+            while len(_backtest_cache) > _BACKTEST_CACHE_MAX:
+                _backtest_cache.popitem(last=False)
     return result
 
 
