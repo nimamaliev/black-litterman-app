@@ -404,6 +404,9 @@ class BLEngine:
         self._ml_cache = {}
         self._feat_cache = {}
         self._base_cache = {}
+        # Serialises the cached builds below so a request and the startup
+        # warm-up never compute the same thing twice side by side.
+        self._build_lock = threading.RLock()
 
         if prices_df is None:
             all_syms = self.tickers + [self.market_ticker, self.risk_free_ticker, "VNQ", "VOX", BOND_TICKER]
@@ -463,6 +466,12 @@ class BLEngine:
         ML_HORIZON days, plus the index at which the label becomes known."""
         if kind in self._ml_cache:
             return self._ml_cache[kind]
+        with self._build_lock:
+            if kind not in self._ml_cache:
+                self._ml_cache[kind] = self._build_ml_dataset(kind)
+        return self._ml_cache[kind]
+
+    def _build_ml_dataset(self, kind):
         px = self.asset_prices
         rows = []
         for j in range(MOM_LOOKBACK + 1, len(px) - ML_HORIZON, ML_STEP):
@@ -477,8 +486,7 @@ class BLEngine:
             fwd = px.iloc[j - 1 + ML_HORIZON] / px.iloc[j - 1] - 1.0
             spread = float((p * fwd).sum())
             rows.append({**feats, "label": int(spread > 0), "known_at": j - 1 + ML_HORIZON})
-        self._ml_cache[kind] = pd.DataFrame(rows)
-        return self._ml_cache[kind]
+        return pd.DataFrame(rows)
 
     def _features_at(self, i):
         if i not in self._feat_cache:
@@ -520,6 +528,12 @@ class BLEngine:
         cached = self._base_cache.get(i)
         if cached is not None:
             return cached
+        with self._build_lock:
+            if i not in self._base_cache:
+                self._base_cache[i] = self._build_base(i)
+        return self._base_cache[i]
+
+    def _build_base(self, i):
         hist = self.asset_prices.iloc[:i]
         mkt_hist = self.market_prices.iloc[:i]
         train = hist.iloc[-TRAIN_WINDOW:]
@@ -556,7 +570,6 @@ class BLEngine:
         base = {"date": hist.index[-1], "S": S, "delta": delta, "pi": pi, "w_mkt": w_mkt,
                 "P_rows": P_rows, "Q": Q, "omegas": omegas, "views": view_info,
                 "ml": ml_info, "train": train}
-        self._base_cache[i] = base
         return base
 
     def _decide(self, i, user_views=(), period_date=None):

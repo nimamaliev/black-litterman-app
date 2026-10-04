@@ -34,17 +34,18 @@ _backtest_lock = threading.Lock()
 
 
 def _refresh_engine_in_background():
-    """Download any missing recent prices and swap in a fresh engine.
+    """Download any missing recent prices, swap in a fresh engine, then warm it.
 
     Startup serves the cached prices immediately; this runs afterwards so a
-    cold start is not blocked on Yahoo Finance.
+    cold start is not blocked on Yahoo Finance. Only the engine that ends up
+    serving requests is warmed: on a small instance two warm-ups running side
+    by side would starve the first requests of CPU.
     """
     global bl_engine, growth_engine
     try:
         if data_loader.refresh_if_stale():
             fresh_prices = data_loader.read_prices()
             new_engine = BLEngine(fresh_prices)
-            _warm_engine(new_engine)
             new_growth = GrowthEngine(fresh_prices)
             bl_engine = new_engine  # atomic reference swaps
             growth_engine = new_growth
@@ -53,6 +54,7 @@ def _refresh_engine_in_background():
             logger.info("Background refresh complete; engine updated.")
     except Exception:
         logger.exception("Background data refresh failed; continuing with cached data.")
+    _warm_engine(bl_engine)
 
 
 # Must match the frontend Backtest page's default start date.
@@ -63,10 +65,12 @@ def _warm_engine(engine):
     """Precompute the ML training set and every rebalance decision of the
     default backtest range, so the first dashboard and backtest requests are
     fast even on a small instance."""
+    started = time.time()
     try:
         engine.run_scenario([])
         last = str(engine.asset_prices.index[-1].date())
         engine.run_backtest(_DEFAULT_BACKTEST_START, last, [], include_benchmarks=False)
+        logger.info("Engine warm-up complete in %.0fs.", time.time() - started)
     except Exception:
         logger.exception("Engine warm-up failed; it will build lazily instead.")
 
@@ -82,12 +86,11 @@ async def lifespan(app: FastAPI):
         prices = data_loader.load_data()
         bl_engine = BLEngine(prices)
         growth_engine = GrowthEngine(prices)
+        threading.Thread(target=_warm_engine, args=(bl_engine,), daemon=True).start()
     else:
         bl_engine = BLEngine(prices)
         growth_engine = GrowthEngine(prices)
         threading.Thread(target=_refresh_engine_in_background, daemon=True).start()
-    # Build the ML training set now so the first dashboard request is fast.
-    threading.Thread(target=_warm_engine, args=(bl_engine,), daemon=True).start()
     logger.info("Engine initialized.")
     yield
     # (no shutdown work required)
