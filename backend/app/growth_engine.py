@@ -17,10 +17,9 @@ in turbulent markets cuts the worst drawdowns.
   exposure pays a transaction cost.
 
 Honest caveats: it needs leverage (margin or leveraged ETFs) to beat SPY on return,
-so it takes on more risk than the Defensive model; it does not pick sectors (a
-sector-momentum tilt was tested and added nothing over SPY); and it gives up some
-upside versus SPY in V-shaped recoveries because exposure is cut after volatility
-has already risen.
+so it takes on more risk than the Defensive model; it does not pick sectors; and
+it gives up some upside versus SPY in V-shaped recoveries because exposure is cut
+after volatility has already risen.
 """
 import logging
 

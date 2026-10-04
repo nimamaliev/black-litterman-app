@@ -17,10 +17,16 @@ Pipeline at every rebalance date, using only data available on that date:
    views on top.
 
 3. View confidence. Omega = ((1 - c) / c) * tau * P Sigma P' (c = 0.5 gives the
-   He-Litterman default). For each model view, c is scaled by a logistic
-   regression that predicts, from regime features, whether that view's
-   long/short portfolio will make money over the next quarter. It is trained
-   walk-forward on labels already observable on the decision date.
+   He-Litterman default). Because Omega is proportional to tau, tau cancels out
+   of the posterior mean exactly: it has no effect on the weights and only
+   scales the posterior covariance used for the reported volatility. The
+   confidence c is the only knob that moves the portfolio. By default c is
+   fixed at VIEW_CONF_BASE. Optionally (ML_ENABLED), a logistic regression
+   predicts from regime features whether each view's long/short portfolio will
+   make money over the next quarter and scales c accordingly. It is off by
+   default: its 63-day labels overlap (a row every 21 days), so it trains on
+   roughly a dozen independent observations when it first switches on, too few
+   to estimate six coefficients, and on 2007-2021 it changed nothing measurable.
 
 4. Posterior + optimisation. Standard BL posterior mean, then a long-only
    mean-variance utility maximisation (risk aversion delta) with a per-sector cap
@@ -60,7 +66,7 @@ REBALANCE_FREQ = 63           # trading days between rebalances (quarterly)
 COST_PER_TRADE = 0.0005       # 5 bps per unit of notional traded (one-way)
 TURNOVER_SKIP_THRESHOLD = 0.05  # skip a rebalance if it would trade < 5% of NAV
 
-TAU = 0.05                    # uncertainty scaling of the prior
+TAU = 0.05                    # prior uncertainty; cancels out of the weights (see docstring)
 MARKET_ERP = 0.05             # assumed annual equity risk premium of the market
 DELTA_MIN, DELTA_MAX = 0.5, 10.0
 MAX_WEIGHT = 0.40             # hard cap per sector
@@ -75,7 +81,7 @@ VIEW_IR = 0.25                # view alpha in units of the view portfolio's vol
 VIEW_CONF_BASE = 0.5          # confidence in the momentum view without ML
 CONF_MIN, CONF_MAX = 0.05, 0.95
 
-ML_ENABLED = True
+ML_ENABLED = False            # optional regime-conditional confidence; see docstring
 ML_HORIZON = 63               # label: momentum spread over the next 63 days
 ML_STEP = 21                  # a training row every 21 trading days
 ML_MIN_ROWS = 36
@@ -136,6 +142,9 @@ def implied_market_weights(asset_rets: pd.DataFrame, mkt_rets: pd.Series) -> pd.
         return pd.Series(1.0 / len(cols), index=cols)
     X = df[cols].to_numpy()
     y = df["__mkt__"].to_numpy()
+    # Penalty row: each unit of budget error costs big**2 = 1e6, versus a total
+    # squared tracking error of ~0.03 for a year of daily returns, so the budget
+    # binds to ~1e-9 (matches an exact constrained solve), then is renormalised.
     big = 1e3
     A = np.vstack([X, big * np.ones((1, X.shape[1]))])
     b = np.concatenate([y, [big]])
@@ -502,8 +511,10 @@ class BLEngine:
         the model only moves confidence when it sees something unusual.
         Returns (confidence, info dict)."""
         info = {"active": False, "probability": None, "base_rate": None, "train_rows": 0}
+        if not ML_ENABLED:
+            return VIEW_CONF_BASE, info
         feats = self._features_at(i)
-        if not ML_ENABLED or feats is None:
+        if feats is None:
             return VIEW_CONF_BASE, info
         data = self._ml_dataset(kind)
         if data.empty:
@@ -783,7 +794,10 @@ class BLEngine:
         return rets, snaps, traded / years
 
     def run_backtest(self, start_date: str, end_date: str, user_views: list, initial_capital=10000.0,
-                     include_benchmarks=True, overlay=True):
+                     include_benchmarks=True, overlay=True, return_series=False):
+        """Walk-forward backtest. With return_series=True the result also holds
+        each strategy's daily returns under "series" (pandas objects, for
+        research scripts only; not JSON-serialisable)."""
         try:
             ts_start, ts_end = pd.Timestamp(start_date), pd.Timestamp(end_date)
         except Exception:
@@ -851,11 +865,14 @@ class BLEngine:
 
         # ---- benchmarks (same dates, same costs)
         benchmarks = []
+        series = {}
         if include_benchmarks:
             def add(name, rets, note):
-                m = perf_metrics(rets.reindex(dates).fillna(0.0), rf)
+                r = rets.reindex(dates).fillna(0.0)
+                m = perf_metrics(r, rf)
                 if m:
                     benchmarks.append({"name": name, "note": note, **m})
+                    series[name] = r
             add("Black-Litterman (this model)", port_rets,
                 "Equilibrium + views" + (" + vol overlay" if overlay and VOL_TARGET is not None else ""))
             add("SPY buy & hold", spy_rets, "The market")
@@ -892,7 +909,7 @@ class BLEngine:
             f"{exposure.mean():.0%} invested."
         )
 
-        return {
+        out = {
             "dates": [str(d.date()) for d in dates],
             "portfolio": port_curve.tolist(),
             "spy": spy_curve.tolist(),
@@ -918,3 +935,8 @@ class BLEngine:
             "summary": summary,
             "warnings": input_warnings,
         }
+        if return_series:
+            series["SPY buy & hold"] = spy_rets
+            out["series"] = series
+            out["rf_daily"] = rf.reindex(dates).ffill()
+        return out

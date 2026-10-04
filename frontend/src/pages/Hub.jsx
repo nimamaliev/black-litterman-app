@@ -23,10 +23,10 @@ const STRATEGIES = [
       'A Black-Litterman sector model: it starts from the S&P 500\'s own sector mix, tilts it with low-volatility and momentum views, and a volatility-targeting overlay scales into cash when markets turn turbulent.',
     bestFor: 'Recessions \u00b7 bear markets \u00b7 high-volatility regimes',
     metrics: [
-      { label: 'Sharpe (SPY 0.55)', value: '0.71' },
-      { label: 'Max DD (SPY -55%)', value: '-24%' },
-      { label: 'CAGR (SPY 10.9%)', value: '8.5%' },
-      { label: 'GFC 2008', value: '-22%' },
+      { label: 'Sharpe 2022\u201326* (SPY 0.51)', value: '0.48' },
+      { label: 'Sharpe 2007\u201321 (SPY 0.56)', value: '0.81' },
+      { label: 'Max DD 2007\u201326 (SPY -55%)', value: '-24%' },
+      { label: 'CAGR 2007\u201326 (SPY 10.9%)', value: '8.6%' },
     ],
   },
   {
@@ -41,9 +41,9 @@ const STRATEGIES = [
       'A volatility-managed S&P 500 strategy that leans into calm, rising markets with up to 1.5x exposure and steps back toward cash when volatility spikes. Built to out-compound buy-and-hold SPY. Uses leverage.',
     bestFor: 'Expansions \u00b7 bull markets \u00b7 risk-on regimes',
     metrics: [
-      { label: 'CAGR (SPY 11.1%)', value: '13.3%' },
-      { label: 'Sharpe (SPY 0.56)', value: '0.67' },
-      { label: 'Max DD (SPY -55%)', value: '-43%' },
+      { label: 'CAGR 2006\u201326 (SPY 11.1%)', value: '13.3%' },
+      { label: 'Sharpe 2006\u201326 (SPY 0.56)', value: '0.67' },
+      { label: 'Max DD 2006\u201326 (SPY -55%)', value: '-43%' },
       { label: 'GFC 2008', value: '-28%' },
     ],
   },
@@ -131,10 +131,13 @@ export default function Hub() {
       </div>
 
       <p className="text-center text-xs text-slate-600 max-w-2xl mx-auto">
-        Defensive metrics are from a walk-forward backtest of US sector ETFs (2007&ndash;2026);
-        Growth metrics are from a backtest of SPY (2006&ndash;2026) with borrowing and trading
-        costs included. All figures are illustrative only. Past performance does not guarantee
-        future results.
+        Backtests, net of trading costs; windows differ between models, so compare each with its
+        own SPY figure, not with each other. Defensive: parameters were chosen on 2007&ndash;2021;
+        2022&ndash;2026 was held out. *The 2022&ndash;26 figure is for the current configuration,
+        which changed after the hold-out was first viewed (the first look gave 0.42). Against the
+        simpler SPY-with-the-same-volatility-overlay benchmark, neither window shows a
+        statistically detectable edge. Growth: SPY with up to 1.5x leverage, 2006&ndash;2026,
+        borrowing costs included. Illustrative only; past performance does not guarantee future results.
       </p>
     </div>
   );

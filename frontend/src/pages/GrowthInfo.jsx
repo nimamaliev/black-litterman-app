@@ -49,7 +49,7 @@ export default function GrowthInfo() {
           <li><span className="font-semibold text-white">It uses leverage.</span> The edge over SPY comes from holding up to 1.5x. Leverage magnifies losses, and borrowing costs vary. In 2022 the strategy fell slightly more than SPY.</li>
           <li><span className="font-semibold text-white">It reacts after volatility rises.</span> It cuts exposure only once markets are already swinging, so it can lag in sharp V-shaped rebounds (2020, 2009) and gives up some of the bounce.</li>
           <li><span className="font-semibold text-white">The edge is modest and uneven.</span> It beat SPY in roughly 12 of 21 calendar years. In the last decade the margin was about 1 percentage point a year, much smaller than in 2007&ndash;2014.</li>
-          <li><span className="font-semibold text-white">It is a single-asset model.</span> It holds SPY and cash only. We tested adding sector momentum picks and it did not improve on SPY, so we left it out rather than dress the model up.</li>
+          <li><span className="font-semibold text-white">It is a single-asset model.</span> It holds SPY and cash only, with no sector or stock selection.</li>
           <li><span className="font-semibold text-white">Real trading differs.</span> Margin rates, leveraged-ETF fees and taxes are not fully modelled, and daily rebalancing may not be practical.</li>
         </ul>
       </Card>
