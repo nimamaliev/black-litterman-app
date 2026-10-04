@@ -55,9 +55,18 @@ def _refresh_engine_in_background():
         logger.exception("Background data refresh failed; continuing with cached data.")
 
 
+# Must match the frontend Backtest page's default start date.
+_DEFAULT_BACKTEST_START = "2007-01-01"
+
+
 def _warm_engine(engine):
+    """Precompute the ML training set and every rebalance decision of the
+    default backtest range, so the first dashboard and backtest requests are
+    fast even on a small instance."""
     try:
         engine.run_scenario([])
+        last = str(engine.asset_prices.index[-1].date())
+        engine.run_backtest(_DEFAULT_BACKTEST_START, last, [], include_benchmarks=False)
     except Exception:
         logger.exception("Engine warm-up failed; it will build lazily instead.")
 

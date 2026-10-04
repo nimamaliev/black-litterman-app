@@ -32,6 +32,7 @@ Pipeline at every rebalance date, using only data available on that date:
    pay transaction costs and only happen outside a no-trade band.
 """
 import logging
+import threading
 import warnings
 
 import numpy as np
@@ -237,6 +238,25 @@ def bl_posterior(pi: pd.Series, S: pd.DataFrame, P: np.ndarray, Q: np.ndarray,
     return pd.Series(mu, index=idx), pd.DataFrame(S_post, index=idx, columns=idx)
 
 
+_QP_CACHE = {}
+_QP_LOCK = threading.Lock()
+
+
+def _qp(n):
+    """A parametrised (DPP) QP built once per universe size and re-solved with
+    new data at every rebalance, instead of re-compiling with cvxpy each time."""
+    if n not in _QP_CACHE:
+        w = cp.Variable(n)
+        mu = cp.Parameter(n)
+        lt = cp.Parameter((n, n))     # sqrt(delta) * Sigma^(1/2)
+        lo = cp.Parameter(n, nonneg=True)
+        hi = cp.Parameter(n, nonneg=True)
+        prob = cp.Problem(cp.Maximize(mu @ w - 0.5 * cp.sum_squares(lt @ w)),
+                          [cp.sum(w) == 1, w >= lo, w <= hi])
+        _QP_CACHE[n] = (prob, w, mu, lt, lo, hi)
+    return _QP_CACHE[n]
+
+
 def optimize_weights(mu: pd.Series, S: pd.DataFrame, delta: float, w_mkt: pd.Series,
                      max_weight: float = None, active_limit: float = None) -> pd.Series:
     """max w'mu - delta/2 w'Sigma w  s.t. sum(w)=1, 0<=w<=cap, |w - w_mkt|<=limit.
@@ -249,17 +269,26 @@ def optimize_weights(mu: pd.Series, S: pd.DataFrame, delta: float, w_mkt: pd.Ser
     idx = S.index
     wm = w_mkt.reindex(idx).fillna(0.0).values
     n = len(idx)
-    Sv = (S.values + S.values.T) / 2
-    w = cp.Variable(n)
-    cons = [cp.sum(w) == 1, w >= 0, w <= max(max_weight, wm.max())]
+    cap = max(max_weight, wm.max())
+    lo = np.zeros(n)
+    hi = np.full(n, cap)
     if active_limit is not None:
-        cons += [w - wm <= active_limit, wm - w <= active_limit]
-    obj = cp.Maximize(mu.reindex(idx).values @ w - 0.5 * delta * cp.quad_form(w, cp.psd_wrap(Sv)))
+        lo = np.maximum(lo, wm - active_limit)
+        hi = np.minimum(hi, wm + active_limit)
+    # Sigma = V diag(lam) V'  ->  w'Sigma w = ||diag(sqrt(lam)) V' w||^2
+    lam, V = np.linalg.eigh((S.values + S.values.T) / 2)
+    lt = np.sqrt(max(delta, 0.0)) * (np.sqrt(np.clip(lam, 0.0, None))[:, None] * V.T)
     try:
-        cp.Problem(obj, cons).solve(solver=cp.CLARABEL)
-        if w.value is None:
-            raise ValueError("solver returned no solution")
-        out = np.clip(np.asarray(w.value).ravel(), 0.0, None)
+        with _QP_LOCK:
+            prob, w, mu_p, lt_p, lo_p, hi_p = _qp(n)
+            mu_p.value = mu.reindex(idx).values.astype(float)
+            lt_p.value = lt
+            lo_p.value = lo
+            hi_p.value = hi
+            prob.solve(solver=cp.CLARABEL)
+            if w.value is None:
+                raise ValueError("solver returned no solution")
+            out = np.clip(np.asarray(w.value).ravel(), 0.0, None)
         out = out / out.sum()
     except Exception as exc:
         logger.warning("optimizer failed (%s); holding market weights", exc)
@@ -374,6 +403,7 @@ class BLEngine:
         self.risk_free_ticker = "^IRX"
         self._ml_cache = {}
         self._feat_cache = {}
+        self._base_cache = {}
 
         if prices_df is None:
             all_syms = self.tickers + [self.market_ticker, self.risk_free_ticker, "VNQ", "VOX", BOND_TICKER]
@@ -434,7 +464,6 @@ class BLEngine:
         if kind in self._ml_cache:
             return self._ml_cache[kind]
         px = self.asset_prices
-        mkt = self.market_prices
         rows = []
         for j in range(MOM_LOOKBACK + 1, len(px) - ML_HORIZON, ML_STEP):
             hist = px.iloc[:j]
@@ -484,8 +513,13 @@ class BLEngine:
         return conf, info
 
     # ------------------------------------------------------------ decision
-    def _decide(self, i, user_views=(), period_date=None):
-        """Full BL decision using prices iloc[:i] (data through day i-1)."""
+    def _decide_base(self, i):
+        """The part of a decision that does not depend on user views (prior,
+        model views, ML confidence). Cached per position i, so repeated
+        backtests and user-view backtests reuse it."""
+        cached = self._base_cache.get(i)
+        if cached is not None:
+            return cached
         hist = self.asset_prices.iloc[:i]
         mkt_hist = self.market_prices.iloc[:i]
         train = hist.iloc[-TRAIN_WINDOW:]
@@ -518,6 +552,21 @@ class BLEngine:
                 "expected_spread": q, "equilibrium_spread": float(pv @ pi.values),
                 "confidence": conf, "ml_probability": info["probability"],
             })
+
+        base = {"date": hist.index[-1], "S": S, "delta": delta, "pi": pi, "w_mkt": w_mkt,
+                "P_rows": P_rows, "Q": Q, "omegas": omegas, "views": view_info,
+                "ml": ml_info, "train": train}
+        self._base_cache[i] = base
+        return base
+
+    def _decide(self, i, user_views=(), period_date=None):
+        """Full BL decision using prices iloc[:i] (data through day i-1)."""
+        base = self._decide_base(i)
+        S, delta, pi, w_mkt = base["S"], base["delta"], base["pi"], base["w_mkt"]
+        Sv = S.values
+        tickers = list(S.index)
+        P_rows, Q, omegas = list(base["P_rows"]), list(base["Q"]), list(base["omegas"])
+        view_info = [dict(v) for v in base["views"]]
 
         # --- Discretionary user views ---
         applied = []
@@ -556,9 +605,9 @@ class BLEngine:
 
         weights = optimize_weights(mu, S, delta, w_mkt)
         return {
-            "date": hist.index[-1], "S": S, "S_post": S_post, "delta": delta,
+            "date": base["date"], "S": S, "S_post": S_post, "delta": delta,
             "pi": pi, "mu": mu, "w_mkt": w_mkt, "weights": weights,
-            "views": view_info, "applied": applied, "ml": ml_info, "train": train,
+            "views": view_info, "applied": applied, "ml": base["ml"], "train": base["train"],
         }
 
     # ------------------------------------------------------------ scenario
