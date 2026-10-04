@@ -1,0 +1,67 @@
+name: Record live recommendation
+
+# Appends the model's recommendation to an append-only CSV on the
+# `track-record` branch every weekday after the US close. Keeping it on its own
+# branch means these commits never trigger app deploys, and git history
+# timestamps every row.
+on:
+  schedule:
+    - cron: "17 22 * * 1-5"   # 22:17 UTC, after the 16:00 ET close
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: track-record
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Fetch existing track record
+        run: |
+          mkdir -p "$RUNNER_TEMP/tr"
+          if git fetch origin track-record; then
+            git show origin/track-record:backend/track_record/recommendations.csv \
+              > "$RUNNER_TEMP/tr/recommendations.csv" 2>/dev/null || rm -f "$RUNNER_TEMP/tr/recommendations.csv"
+          fi
+
+      - name: Record today's recommendation
+        working-directory: backend
+        run: python record_recommendation.py --file "$RUNNER_TEMP/tr/recommendations.csv"
+
+      - name: Commit to track-record branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898728+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse --verify origin/track-record >/dev/null 2>&1; then
+            git worktree add "$RUNNER_TEMP/branch" origin/track-record
+            git -C "$RUNNER_TEMP/branch" checkout -B track-record
+          else
+            git worktree add --detach "$RUNNER_TEMP/branch"
+            git -C "$RUNNER_TEMP/branch" checkout --orphan track-record
+            git -C "$RUNNER_TEMP/branch" rm -rf --quiet .
+          fi
+          mkdir -p "$RUNNER_TEMP/branch/backend/track_record"
+          cp "$RUNNER_TEMP/tr/recommendations.csv" "$RUNNER_TEMP/branch/backend/track_record/recommendations.csv"
+          cd "$RUNNER_TEMP/branch"
+          git add backend/track_record/recommendations.csv
+          if git diff --cached --quiet; then
+            echo "No new recommendation to commit."
+          else
+            git commit -m "Track record: $(tail -n 1 backend/track_record/recommendations.csv | cut -d, -f1)"
+            git push origin track-record
+          fi

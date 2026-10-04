@@ -25,8 +25,8 @@ export default function Info() {
           A <span className="text-blue-500">Crash-Protection</span> Allocation Model
         </h1>
         <p className="text-lg text-slate-400">
-          A sector-rotation Black-Litterman portfolio with a volatility-targeting overlay. Its single
-          job: stay invested in calm markets, and pull risk off the table before drawdowns get deep.
+          A Black-Litterman sector portfolio with a volatility-targeting overlay. Its job: hold a
+          sensibly tilted version of the market in calm times, and pull risk off the table when volatility spikes.
         </p>
       </header>
 
@@ -37,7 +37,7 @@ export default function Info() {
             <div className="p-3 bg-blue-900/30 rounded-lg border border-blue-700/50">
               <Anchor className="text-blue-400" size={32} />
             </div>
-            <h2 className="text-2xl font-bold text-white">1. Anchor, Tilt &amp; De-risk</h2>
+            <h2 className="text-2xl font-bold text-white">1. Equilibrium, Views &amp; De-risk</h2>
           </div>
           <p className="text-slate-400 leading-relaxed">
             The portfolio is built in three deliberate layers, each one designed to limit how much can go wrong:
@@ -46,20 +46,23 @@ export default function Info() {
             <li className="flex gap-3">
               <Shield className="text-green-400 shrink-0 mt-1" size={20} />
               <div>
-                <strong className="text-white block">The Anchor (Diversify)</strong>
+                <strong className="text-white block">The Prior (Market Equilibrium)</strong>
                 <span className="text-slate-500 text-sm">
-                  We start from a risk-based <strong>inverse-volatility</strong> equilibrium across the 11 sector ETFs.
-                  This is the &quot;if we knew nothing&quot; portfolio &mdash; broadly diversified, never concentrated in a single bet.
+                  The &quot;if we knew nothing&quot; portfolio is the market itself. We infer the S&amp;P 500&apos;s sector weights
+                  from SPY&apos;s returns, then reverse-optimise them into the <strong>implied returns</strong> the market must be
+                  expecting for those weights to be optimal. With no views, the model simply holds the market.
                 </span>
               </div>
             </li>
             <li className="flex gap-3">
               <Target className="text-purple-400 shrink-0 mt-1" size={20} />
               <div>
-                <strong className="text-white block">The Tilt (Adapt)</strong>
+                <strong className="text-white block">The Views (Tilt)</strong>
                 <span className="text-slate-500 text-sm">
-                  Using <strong>Black-Litterman</strong> math we apply only modest, high-confidence tilts toward stronger sectors &mdash;
-                  enough to adapt to the regime, never enough to bet the whole portfolio on one view.
+                  Two relative views are blended in with <strong>Black-Litterman</strong>: low-volatility sectors beat
+                  high-volatility ones, and sectors with strong 12-month momentum (but a weak last month) beat the laggards.
+                  Each view&apos;s confidence sets how far the posterior moves from equilibrium, a logistic-regression model
+                  adjusts that confidence by regime, and no sector can drift more than 10 points from its market weight.
                 </span>
               </div>
             </li>
@@ -82,13 +85,13 @@ export default function Info() {
           <h3 className="text-white font-bold mb-4">Allocation Logic</h3>
           <div className="space-y-2 font-mono text-sm">
             <div className="flex justify-between p-3 bg-slate-900 rounded border border-slate-700/50">
-              <span className="text-slate-400">1. Risk-based anchor</span>
-              <span className="text-green-400">Diversified</span>
+              <span className="text-slate-400">1. Market equilibrium</span>
+              <span className="text-green-400">Prior</span>
             </div>
             <div className="flex justify-center text-slate-600">\u2193</div>
             <div className="flex justify-between p-3 bg-slate-900 rounded border border-slate-700/50">
-              <span className="text-slate-400">2. Modest BL tilts</span>
-              <span className="text-purple-400">Adaptive</span>
+              <span className="text-slate-400">2. Views &rarr; BL posterior</span>
+              <span className="text-purple-400">Tilted</span>
             </div>
             <div className="flex justify-center text-slate-600">\u2193</div>
             <div className="flex justify-between p-3 bg-slate-900 rounded border border-slate-700/50">
@@ -142,33 +145,37 @@ export default function Info() {
           <h2 className="text-2xl font-bold text-white">3. What the Defense Buys You</h2>
         </div>
         <p className="text-slate-400 text-sm mb-6 max-w-2xl">
-          Across a 2007&ndash;2026 walk-forward backtest, the volatility-targeted model gave up a little raw
-          return in exchange for dramatically smaller losses &mdash; exactly the trade a defensive investor wants.
+          Across a 2007&ndash;2026 walk-forward backtest, the volatility-targeted model gave up raw return
+          in exchange for much smaller losses. That is the trade a defensive investor is making.
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
-            <div className="text-3xl font-bold text-white font-mono">0.70</div>
+            <div className="text-3xl font-bold text-white font-mono">0.71</div>
             <div className="text-xs text-slate-500 mt-1">Sharpe Ratio</div>
-            <div className="text-[11px] text-green-400 mt-1">vs 0.52 buy &amp; hold</div>
+            <div className="text-[11px] text-green-400 mt-1">vs 0.55 buy &amp; hold</div>
           </div>
           <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
-            <div className="text-3xl font-bold text-white font-mono">-15%</div>
+            <div className="text-3xl font-bold text-white font-mono">-24%</div>
             <div className="text-xs text-slate-500 mt-1">Max Drawdown</div>
-            <div className="text-[11px] text-green-400 mt-1">vs -53% buy &amp; hold</div>
+            <div className="text-[11px] text-green-400 mt-1">vs -55% buy &amp; hold</div>
           </div>
           <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
-            <div className="text-3xl font-bold text-white font-mono">-12%</div>
+            <div className="text-3xl font-bold text-white font-mono">-22%</div>
             <div className="text-xs text-slate-500 mt-1">2008 Crisis</div>
             <div className="text-[11px] text-green-400 mt-1">vs ~-55% market</div>
           </div>
           <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
-            <div className="text-3xl font-bold text-white font-mono">-11%</div>
+            <div className="text-3xl font-bold text-white font-mono">-12%</div>
             <div className="text-xs text-slate-500 mt-1">2020 COVID Crash</div>
             <div className="text-[11px] text-green-400 mt-1">vs ~-34% market</div>
           </div>
         </div>
         <p className="text-[11px] text-slate-600 mt-4">
-          Backtested on US sector ETFs, net of 0.05% per-trade costs. Illustrative only; past performance does not guarantee future results.
+          Backtested on US sector ETFs, net of 0.05% costs on every unit traded (sector rebalances and overlay changes).
+          Design choices were made on 2007&ndash;2021 only; on the held-out 2022&ndash;mid-2026 period the model returned
+          8.2%/yr (Sharpe 0.42) vs SPY 12.1% (0.51), with a -14% vs -25% max drawdown. The overlay cost return in that
+          V-shaped period; the same portfolio fully invested had a Sharpe of 0.57. Illustrative only; past performance
+          does not guarantee future results.
         </p>
       </div>
 
@@ -177,28 +184,28 @@ export default function Info() {
         <div className="bg-slate-800 p-8 rounded-2xl border border-slate-700">
           <div className="flex items-center gap-3 mb-6">
             <EyeOff className="text-red-400" size={32} />
-            <h2 className="text-xl font-bold text-white">4. Anti-Bias Architecture</h2>
+            <h2 className="text-xl font-bold text-white">4. Guarding Against Bias</h2>
           </div>
           <p className="text-slate-400 mb-4 text-sm">
-            The backtest rigorously prevents &quot;look-ahead bias&quot; (using tomorrow&apos;s data to trade today) through strict isolation protocols.
+            No backtest is truly bias-free, but this one is built to limit the usual ones &mdash; and to tell you about the rest.
           </p>
           <ul className="space-y-3 text-sm">
             <li className="flex gap-2 items-start">
               <span className="text-green-400 font-mono">01.</span>
               <span className="text-slate-300">
-                <strong>Strict Training Windows:</strong> Decisions for date X use <em>only</em> the 504 days prior to X. The model literally cannot see the future.
+                <strong>Point-in-Time Decisions:</strong> A decision for date X uses only prices up to the close before X, and the ML model only trains on outcomes that were already known by then.
               </span>
             </li>
             <li className="flex gap-2 items-start">
               <span className="text-green-400 font-mono">02.</span>
               <span className="text-slate-300">
-                <strong>Walk-Forward Validation:</strong> We train on past data, make a decision, then step forward in time to measure the real result.
+                <strong>Held-Out Period:</strong> Every parameter was chosen on 2007&ndash;2021. 2022 onward was evaluated once, afterwards, and is reported as-is.
               </span>
             </li>
             <li className="flex gap-2 items-start">
               <span className="text-green-400 font-mono">03.</span>
               <span className="text-slate-300">
-                <strong>Point-in-Time Features:</strong> Risk signals like volatility are computed strictly from historical windows, never the full dataset.
+                <strong>Known Limits:</strong> XLC (2018) and XLRE (2015) are back-filled with VOX and VNQ, and choosing sector ETFs at all is a decision made with hindsight. A live track record is now being logged daily.
               </span>
             </li>
           </ul>
@@ -216,7 +223,7 @@ export default function Info() {
             <li className="flex gap-2 items-start">
               <DollarSign className="text-yellow-400 shrink-0" size={16} />
               <span className="text-slate-300">
-                <strong>Transaction Costs:</strong> A <strong>0.05%</strong> fee is deducted on every trade, so the results reflect what survives real-world churn.
+                <strong>Transaction Costs:</strong> <strong>0.05%</strong> of every dollar traded is deducted &mdash; on sector rebalances and on every change in the cash overlay.
               </span>
             </li>
             <li className="flex gap-2 items-start">

@@ -100,9 +100,10 @@ export default function Dashboard() {
 
   // Handlers
   const addSimpleView = () => setScenarioViews([...scenarioViews, { ...newView }]);
+  // A pair is one genuine Black-Litterman relative view: A beats B by `diff`.
   const addPairView = () => {
-    const half = pairView.diff / 2;
-    setScenarioViews([...scenarioViews, { ticker: pairView.assetA, value: half, confidence: pairView.confidence }, { ticker: pairView.assetB, value: -half, confidence: pairView.confidence }]);
+    if (pairView.assetA === pairView.assetB) return;
+    setScenarioViews([...scenarioViews, { ticker: pairView.assetA, versus: pairView.assetB, value: pairView.diff, confidence: pairView.confidence }]);
   };
   const applyTemplate = (key) => key && setScenarioViews([...TEMPLATES[key].views]);
   const removeView = (i) => { const u = [...scenarioViews]; u.splice(i, 1); setScenarioViews(u); };
@@ -127,6 +128,15 @@ export default function Dashboard() {
   })).sort((a, b) => b.weight - a.weight);
 
   const sharpe = ((data.metrics.expected_return - data.metrics.risk_free) / (data.metrics.volatility + 0.0001)).toFixed(2);
+
+  const tiltData = data.equilibrium_weights
+    ? Object.keys(SECTOR_MAP).map(t => ({
+        name: t,
+        Market: +((data.equilibrium_weights[t] || 0) * 100).toFixed(1),
+        Model: +((data.weights[t] || 0) * 100).toFixed(1),
+      }))
+    : [];
+  const modelViews = (data.views || []).filter(v => v.source === 'model');
 
   const erData = data.expected_returns
     ? Object.keys(SECTOR_MAP).map(t => ({
@@ -347,7 +357,7 @@ export default function Dashboard() {
                  {scenarioViews.length === 0 ? <p className="text-slate-600 text-xs italic text-center mt-4">No active views defined.</p> :
                    scenarioViews.map((v, i) => (
                      <div key={i} className="flex justify-between items-center bg-slate-800 p-2 rounded text-xs border border-slate-700">
-                       <div className="flex gap-2"><span className="text-blue-400 font-bold">{v.ticker}</span> <span className="text-slate-300">{(v.value*100).toFixed(0)}%</span> <span className="text-slate-500">({v.confidence})</span></div>
+                       <div className="flex gap-2"><span className="text-blue-400 font-bold">{v.ticker}{v.versus ? ` vs ${v.versus}` : ''}</span> <span className="text-slate-300">{v.value > 0 ? '+' : ''}{(v.value*100).toFixed(0)}%</span> <span className="text-slate-500">({v.confidence})</span></div>
                        <button onClick={() => removeView(i)} className="text-slate-500 hover:text-red-400">×</button>
                      </div>
                    ))
@@ -434,6 +444,46 @@ export default function Dashboard() {
                )}
             </div>
         </div>
+
+        {/* EQUILIBRIUM VS RECOMMENDED + ACTIVE VIEWS */}
+        {tiltData.length > 0 && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 bg-slate-800 p-6 rounded-xl border border-slate-700">
+              <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wide mb-1">Market Equilibrium vs Recommended</h2>
+              <p className="text-xs text-slate-500 mb-4">The grey bars are the S&amp;P 500&apos;s own sector weights (the Black-Litterman prior). The blue bars are where the views moved them (%).</p>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={tiltData} margin={ { top: 10, right: 10, left: -10, bottom: 0 } }>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} />
+                  <YAxis stroke="#94a3b8" fontSize={11} tickFormatter={(v)=>`${v}%`} />
+                  <Tooltip contentStyle={ { backgroundColor:'#0f172a', borderColor:'#334155', borderRadius:'8px', color:'#fff' } } formatter={(v)=>`${v}%`} />
+                  <Legend />
+                  <Bar dataKey="Market" fill="#64748b" radius={[3,3,0,0]} />
+                  <Bar dataKey="Model" fill="#3b82f6" radius={[3,3,0,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="bg-slate-800 p-6 rounded-xl border border-slate-700">
+              <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wide mb-1">Model Views</h2>
+              <p className="text-xs text-slate-500 mb-4">Relative views fed into Black-Litterman. Confidence sets how far they pull the portfolio away from the market.</p>
+              <div className="space-y-3">
+                {modelViews.length === 0 && <p className="text-xs text-slate-500 italic">No model views at this date.</p>}
+                {modelViews.map((v, i) => (
+                  <div key={i} className="bg-slate-900/60 border border-slate-700 rounded-lg p-3 text-xs space-y-1">
+                    <p className="text-white font-medium">{v.description}</p>
+                    <p className="text-slate-400">
+                      Expected spread {(v.expected_spread * 100).toFixed(1)}% vs {(v.equilibrium_spread * 100).toFixed(1)}% at equilibrium
+                    </p>
+                    <p className="text-slate-400">
+                      Confidence <span className="text-blue-400 font-bold">{(v.confidence * 100).toFixed(0)}%</span>
+                      {v.ml_probability != null && <> &middot; ML: {(v.ml_probability * 100).toFixed(0)}% chance this view pays off</>}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* PRIOR VS POSTERIOR EXPECTED RETURNS */}
         {erData.length > 0 && (
