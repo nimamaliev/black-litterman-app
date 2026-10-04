@@ -134,6 +134,31 @@ def test_posterior_moves_toward_view_more_with_higher_confidence(engine):
     assert pi["XLE"] < mu_lo["XLE"] < mu_hi["XLE"] < q + 1e-9
 
 
+def test_tau_does_not_change_posterior_mean_or_weights(engine):
+    # Omega is proportional to tau, so tau cancels out of the posterior mean.
+    S, delta, pi, w_mkt = _prior(engine)
+    p = np.zeros(len(S))
+    p[S.index.get_loc("XLE")] = 1.0
+    p[S.index.get_loc("XLK")] = -1.0
+    q = np.array([float(p @ pi.values) + 0.05])
+    out = []
+    for tau in (0.01, 0.05, 0.5):
+        om = np.array([[view_omega(p, S.values, 0.6, tau)]])
+        mu, S_post = bl_posterior(pi, S, p[None, :], q, om, tau)
+        out.append((mu, optimize_weights(mu, S, delta, w_mkt), S_post))
+    for mu, w, _ in out[1:]:
+        assert np.allclose(mu.values, out[0][0].values, atol=1e-12)
+        assert np.allclose(w.values, out[0][1].values, atol=1e-6)
+    # ...but it does widen the posterior covariance (used for reported vol).
+    assert out[2][2].loc["XLE", "XLE"] > out[0][2].loc["XLE", "XLE"]
+
+
+def test_ml_is_off_by_default(engine):
+    assert eng.ML_ENABLED is False
+    _, info = engine._view_confidence(len(engine.asset_prices), eng.VIEW_SIGNALS[0])
+    assert info["active"] is False
+
+
 def test_relative_view_tilts_long_leg_up_and_short_leg_down(engine):
     S, delta, pi, w_mkt = _prior(engine)
     p = np.zeros(len(S))
@@ -197,6 +222,19 @@ def test_simulate_schedule_is_contiguous_and_charges_full_turnover():
     assert rets.iloc[4] == pytest.approx(0.0 - 0.002)
 
 
+def test_skipped_rebalances_keep_drifting():
+    # Rebalancing to the same target with a high skip threshold must be
+    # identical to buy-and-hold: skipped periods keep the drifted weights.
+    idx = pd.bdate_range("2020-01-01", periods=9)
+    prices = pd.DataFrame({"A": 100 * 1.1 ** np.arange(9), "B": np.full(9, 100.0)}, index=idx)
+    w = pd.Series({"A": 0.5, "B": 0.5})
+    rets, snaps, _ = BLEngine.simulate_schedule(prices, [(1, w), (4, w), (7, w)], end_pos=9,
+                                                skip_threshold=0.5, cost=0.0)
+    buy_hold = (prices / prices.iloc[0] * 0.5).sum(axis=1).pct_change().iloc[1:]
+    assert np.allclose(rets.values, buy_hold.values, atol=1e-12)
+    assert snaps[2][1]["A"] > snaps[1][1]["A"] > 0.5
+
+
 # --- Full pipelines ----------------------------------------------------------
 
 def test_run_scenario_structure(engine):
@@ -256,6 +294,7 @@ def test_run_backtest_rejects_inverted_dates(engine):
 
 
 def test_ml_labels_are_only_used_once_observable(engine, monkeypatch):
+    monkeypatch.setattr(eng, "ML_ENABLED", True)
     monkeypatch.setattr(eng, "ML_MIN_ROWS", 5)
     i = 700
     data = engine._ml_dataset(eng.VIEW_SIGNALS[0])

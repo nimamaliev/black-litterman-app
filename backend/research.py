@@ -1,21 +1,36 @@
-"""research.py - parameter research with an enforced development / hold-out split.
+"""research.py - parameter research on a development / hold-out split.
 
-Every sweep below runs ONLY on the development period (DEV_START..DEV_END).
-The hold-out period (HOLDOUT_START onward) is evaluated once, for the final
-configuration, and only when you pass --holdout. Tuning anything after looking
-at the hold-out numbers turns them into in-sample numbers, so don't.
+Sweeps run ONLY on the development period (DEV_START..DEV_END). The hold-out
+period (HOLDOUT_START onward) is evaluated only with --holdout.
+
+This is a convention, not a guarantee: nothing in code can stop someone from
+looking at the hold-out and then changing engine.py. What this script does is
+make that visible. Every --holdout run appends the full engine configuration
+(and its hash) to research_holdout_log.jsonl, which is committed to the repo,
+and warns loudly when the hold-out has already been viewed under a different
+configuration - from then on, hold-out numbers for the new configuration are
+not out-of-sample and must be reported as such.
+
+Each window also reports a block-bootstrap interval for the difference in
+Sharpe ratio between key strategy pairs, because a single 4-5 year window is
+one realisation and small Sharpe differences are usually noise.
 
 Run from backend/:
 
-    python research.py              # dev-period sweeps
-    python research.py --holdout    # final config on dev AND hold-out
+    python research.py              # dev-period sweeps + dev intervals
+    python research.py --holdout    # also the hold-out (logged)
 
 Uses the cached prices in app/data/prices.parquet (no network needed).
 """
 import argparse
+import hashlib
+import json
 import logging
+import os
 import sys
+from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 import app.engine as eng
@@ -23,6 +38,16 @@ from app import data_loader
 
 DEV_START, DEV_END = "2007-01-01", "2021-12-31"
 HOLDOUT_START = "2022-01-01"
+HOLDOUT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "research_holdout_log.jsonl")
+
+# Sharpe-difference intervals: (strategy, comparator) pairs from the benchmark table.
+PAIRS = [
+    ("Black-Litterman (this model)", "SPY with the same vol overlay"),
+    ("Black-Litterman, no overlay", "Market equilibrium (no views)"),
+    ("Black-Litterman, no overlay", "SPY buy & hold"),
+]
+BOOT_REPS = 2000
+BOOT_BLOCK = 21          # trading days per block (keeps a month of autocorrelation)
 
 # One-at-a-time sweeps around the current engine defaults.
 SWEEPS = {
@@ -35,6 +60,74 @@ SWEEPS = {
 }
 
 
+def engine_config():
+    """All simple module-level settings of the engine, and a short hash of them."""
+    cfg = {}
+    for k in sorted(dir(eng)):
+        v = getattr(eng, k)
+        if k.isupper() and isinstance(v, (int, float, str, bool, tuple, type(None))):
+            cfg[k] = list(v) if isinstance(v, tuple) else v
+    digest = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
+    return cfg, digest
+
+
+def check_and_log_holdout(data_end, results):
+    """Warn if the hold-out was already viewed under another config; append this run."""
+    cfg, digest = engine_config()
+    previous = []
+    if os.path.exists(HOLDOUT_LOG):
+        with open(HOLDOUT_LOG) as f:
+            previous = [json.loads(line) for line in f if line.strip()]
+    others = [p for p in previous if p["config_hash"] != digest]
+    if others:
+        bar = "!" * 78
+        print(f"\n{bar}\nWARNING: the hold-out was already viewed under {len(set(p['config_hash'] for p in others))}"
+              f" other configuration(s), first on {others[0]['viewed_at_utc'][:10]}.\n"
+              f"Hold-out results for config {digest} are NOT out-of-sample: any change made\n"
+              f"after that first look may have been influenced by it. Report them as post-hoc.\n{bar}")
+    entry = {"viewed_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "config_hash": digest, "data_end": data_end, "config": cfg, "results": results}
+    with open(HOLDOUT_LOG, "a") as f:
+        f.write(json.dumps(entry, sort_keys=True) + "\n")
+    print(f"(hold-out view logged to {os.path.basename(HOLDOUT_LOG)}, config {digest})")
+
+
+def _sharpe(r, rf):
+    ex = r - rf
+    sd = ex.std()
+    return float(ex.mean() / sd * np.sqrt(252)) if sd > 0 else 0.0
+
+
+def sharpe_diff_interval(a, b, rf, reps=BOOT_REPS, block=BOOT_BLOCK, seed=0):
+    """Circular block bootstrap of Sharpe(a) - Sharpe(b) on paired daily returns.
+
+    Returns (observed difference, 5th pct, 95th pct, share of resamples > 0)."""
+    df = pd.concat([a, b, rf], axis=1).dropna()
+    x = df.to_numpy()
+    n = len(x)
+    rng = np.random.default_rng(seed)
+    n_blocks = int(np.ceil(n / block))
+    diffs = np.empty(reps)
+    for k in range(reps):
+        starts = rng.integers(0, n, n_blocks)
+        idx = (starts[:, None] + np.arange(block)[None, :]).ravel()[:n] % n
+        s = x[idx]
+        ea, eb = s[:, 0] - s[:, 2], s[:, 1] - s[:, 2]
+        diffs[k] = (ea.mean() / ea.std() - eb.mean() / eb.std()) * np.sqrt(252)
+    obs = _sharpe(df.iloc[:, 0], df.iloc[:, 2]) - _sharpe(df.iloc[:, 1], df.iloc[:, 2])
+    return obs, float(np.percentile(diffs, 5)), float(np.percentile(diffs, 95)), float((diffs > 0).mean())
+
+
+def intervals(res, title):
+    print(f"\nSharpe differences, {title} (block bootstrap, {BOOT_REPS} resamples, {BOOT_BLOCK}-day blocks):")
+    out = {}
+    for a, b in PAIRS:
+        obs, lo, hi, pos = sharpe_diff_interval(res["series"][a], res["series"][b], res["rf_daily"])
+        print(f"  {a} vs {b}: {obs:+.2f}  [90% CI {lo:+.2f} .. {hi:+.2f}]  P(>0) {pos:.0%}")
+        out[f"{a} vs {b}"] = {"diff": round(obs, 3), "ci90": [round(lo, 3), round(hi, 3)], "p_pos": round(pos, 3)}
+    return out
+
+
 def run(prices, start, end, overrides=None):
     overrides = overrides or {}
     saved = {k: getattr(eng, k) for k in overrides}
@@ -42,7 +135,7 @@ def run(prices, start, end, overrides=None):
         for k, v in overrides.items():
             setattr(eng, k, v)
         e = eng.BLEngine(prices)
-        return e.run_backtest(start, end, [])
+        return e.run_backtest(start, end, [], return_series=True)
     finally:
         for k, v in saved.items():
             setattr(eng, k, v)
@@ -75,6 +168,7 @@ def main():
 
     base = run(prices, DEV_START, DEV_END)
     table(base, f"DEV {DEV_START}..{DEV_END} - current defaults")
+    intervals(base, "dev")
 
     if not args.no_sweep:
         print("\nOne-at-a-time sweeps on DEV (Sharpe / CAGR / MaxDD):")
@@ -92,7 +186,11 @@ def main():
     if args.holdout:
         end = str(prices.index.max().date())
         hold = run(prices, HOLDOUT_START, end)
-        table(hold, f"HOLD-OUT {HOLDOUT_START}..{end} - evaluate once, do not tune on this")
+        table(hold, f"HOLD-OUT {HOLDOUT_START}..{end} - do not tune on this")
+        ci = intervals(hold, "hold-out")
+        summary = {b["name"]: {k: round(b[k], 4) for k in ("cagr", "volatility", "sharpe", "max_dd")}
+                   for b in hold["benchmarks"]}
+        check_and_log_holdout(end, {"benchmarks": summary, "sharpe_diff": ci})
 
 
 if __name__ == "__main__":

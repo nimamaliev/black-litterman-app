@@ -61,8 +61,9 @@ export default function Info() {
                 <span className="text-slate-500 text-sm">
                   Two relative views are blended in with <strong>Black-Litterman</strong>: low-volatility sectors beat
                   high-volatility ones, and sectors with strong 12-month momentum (but a weak last month) beat the laggards.
-                  Each view&apos;s confidence sets how far the posterior moves from equilibrium, a logistic-regression model
-                  adjusts that confidence by regime, and no sector can drift more than 10 points from its market weight.
+                  Each view&apos;s confidence sets how far the posterior moves from equilibrium, and no sector can drift more
+                  than 10 points from its market weight. The views are rule-based; an optional machine-learning confidence
+                  model exists but is off, because it had too little independent data to estimate and changed nothing.
                 </span>
               </div>
             </li>
@@ -142,40 +143,43 @@ export default function Info() {
       <div className="bg-gradient-to-br from-blue-900/20 to-slate-800 rounded-2xl border border-blue-500/20 p-8">
         <div className="flex items-center gap-3 mb-2">
           <Shield className="text-blue-400" size={32} />
-          <h2 className="text-2xl font-bold text-white">3. What the Defense Buys You</h2>
+          <h2 className="text-2xl font-bold text-white">3. What the Defense Buys You &mdash; and What It Doesn&apos;t</h2>
         </div>
-        <p className="text-slate-400 text-sm mb-6 max-w-2xl">
-          Across a 2007&ndash;2026 walk-forward backtest, the volatility-targeted model gave up raw return
-          in exchange for much smaller losses. That is the trade a defensive investor is making.
+        <p className="text-slate-400 text-sm mb-6 max-w-3xl">
+          The volatility overlay is where the protection comes from: it roughly halves volatility and drawdowns,
+          and costs return in V-shaped markets. Whether the sector views add anything on top is a closer call.
+          Against simply applying the same overlay to SPY, the model was ahead on 2007&ndash;2021 and slightly
+          behind on 2022&ndash;2026, and neither difference is statistically detectable. Treat this as a
+          well-built Black-Litterman pipeline with a defensive overlay, not as a proven source of excess return.
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
-            <div className="text-3xl font-bold text-white font-mono">0.71</div>
-            <div className="text-xs text-slate-500 mt-1">Sharpe Ratio</div>
-            <div className="text-[11px] text-green-400 mt-1">vs 0.55 buy &amp; hold</div>
+            <div className="text-3xl font-bold text-white font-mono">0.81</div>
+            <div className="text-xs text-slate-500 mt-1">Sharpe 2007&ndash;21 (design period)</div>
+            <div className="text-[11px] text-slate-400 mt-1">SPY + same overlay 0.72 &middot; SPY 0.56</div>
+          </div>
+          <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
+            <div className="text-3xl font-bold text-white font-mono">0.48*</div>
+            <div className="text-xs text-slate-500 mt-1">Sharpe 2022&ndash;26 (held out)</div>
+            <div className="text-[11px] text-slate-400 mt-1">SPY + same overlay 0.50 &middot; SPY 0.51</div>
           </div>
           <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
             <div className="text-3xl font-bold text-white font-mono">-24%</div>
-            <div className="text-xs text-slate-500 mt-1">Max Drawdown</div>
+            <div className="text-xs text-slate-500 mt-1">Max Drawdown 2007&ndash;26</div>
             <div className="text-[11px] text-green-400 mt-1">vs -55% buy &amp; hold</div>
           </div>
           <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
             <div className="text-3xl font-bold text-white font-mono">-22%</div>
             <div className="text-xs text-slate-500 mt-1">2008 Crisis</div>
-            <div className="text-[11px] text-green-400 mt-1">vs ~-55% market</div>
-          </div>
-          <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4 text-center">
-            <div className="text-3xl font-bold text-white font-mono">-12%</div>
-            <div className="text-xs text-slate-500 mt-1">2020 COVID Crash</div>
-            <div className="text-[11px] text-green-400 mt-1">vs ~-34% market</div>
+            <div className="text-[11px] text-green-400 mt-1">vs -55% buy &amp; hold</div>
           </div>
         </div>
         <p className="text-[11px] text-slate-600 mt-4">
           Backtested on US sector ETFs, net of 0.05% costs on every unit traded (sector rebalances and overlay changes).
-          Design choices were made on 2007&ndash;2021 only; on the held-out 2022&ndash;mid-2026 period the model returned
-          8.2%/yr (Sharpe 0.42) vs SPY 12.1% (0.51), with a -14% vs -25% max drawdown. The overlay cost return in that
-          V-shaped period; the same portfolio fully invested had a Sharpe of 0.57. Illustrative only; past performance
-          does not guarantee future results.
+          Sharpe-difference vs SPY with the same overlay, block-bootstrap 90% intervals: 2007&ndash;21 +0.09 (&minus;0.01 to +0.20),
+          2022&ndash;26 &minus;0.02 (&minus;0.27 to +0.22). *The 2022&ndash;26 figure is for the current configuration, which was
+          changed (ML confidence switched off) after the hold-out had been viewed once, when it showed 0.42; it is therefore
+          not a clean out-of-sample number. Illustrative only; past performance does not guarantee future results.
         </p>
       </div>
 
@@ -193,19 +197,19 @@ export default function Info() {
             <li className="flex gap-2 items-start">
               <span className="text-green-400 font-mono">01.</span>
               <span className="text-slate-300">
-                <strong>Point-in-Time Decisions:</strong> A decision for date X uses only prices up to the close before X, and the ML model only trains on outcomes that were already known by then.
+                <strong>Point-in-Time Decisions:</strong> A decision for date X uses only prices up to the close before X.
               </span>
             </li>
             <li className="flex gap-2 items-start">
               <span className="text-green-400 font-mono">02.</span>
               <span className="text-slate-300">
-                <strong>Held-Out Period:</strong> Every parameter was chosen on 2007&ndash;2021. 2022 onward was evaluated once, afterwards, and is reported as-is.
+                <strong>Held-Out Period:</strong> Parameters were chosen on 2007&ndash;2021, and every look at 2022 onward is logged with the exact configuration used. One change was made after the first look, and it is disclosed above.
               </span>
             </li>
             <li className="flex gap-2 items-start">
               <span className="text-green-400 font-mono">03.</span>
               <span className="text-slate-300">
-                <strong>Known Limits:</strong> XLC (2018) and XLRE (2015) are back-filled with VOX and VNQ, and choosing sector ETFs at all is a decision made with hindsight. A live track record is now being logged daily.
+                <strong>Known Limits:</strong> XLC (2018) and XLRE (2015) are back-filled with VOX and VNQ, and choosing sector ETFs at all is a decision made with hindsight. A live track record is logged every trading day.
               </span>
             </li>
           </ul>

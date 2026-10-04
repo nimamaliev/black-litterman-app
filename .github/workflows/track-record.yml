@@ -1,9 +1,15 @@
 name: Record live recommendation
 
-# Appends the model's recommendation to an append-only CSV on the
-# `track-record` branch every weekday after the US close. Keeping it on its own
-# branch means these commits never trigger app deploys, and git history
-# timestamps every row.
+# Appends the model's recommendation to the CSV on the `track-record` branch
+# every weekday after the US close. Keeping it on its own branch means these
+# commits never trigger app deploys.
+#
+# Integrity: each run verifies that every past version of the CSV was only
+# appended to (backend/verify_track_record.py) and writes the new file's
+# SHA-256 into the run summary, so GitHub's run history independently records
+# what the file looked like on each day. This is detection, not prevention: a
+# consistent force-push rewrite is only blocked by branch protection on
+# `track-record` (disallow force pushes and deletion).
 on:
   schedule:
     - cron: "17 22 * * 1-5"   # 22:17 UTC, after the 16:00 ET close
@@ -21,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the history check below walks the track-record branch
 
       - uses: actions/setup-python@v5
         with:
@@ -39,9 +47,30 @@ jobs:
               > "$RUNNER_TEMP/tr/recommendations.csv" 2>/dev/null || rm -f "$RUNNER_TEMP/tr/recommendations.csv"
           fi
 
+      - name: Verify the existing record is append-only
+        run: |
+          if git rev-parse --verify origin/track-record >/dev/null 2>&1; then
+            python backend/verify_track_record.py --ref origin/track-record
+          else
+            echo "No track-record branch yet; nothing to verify."
+          fi
+
       - name: Record today's recommendation
         working-directory: backend
         run: python record_recommendation.py --file "$RUNNER_TEMP/tr/recommendations.csv"
+
+      - name: Check the new file only appends, and log its hash
+        run: |
+          if git rev-parse --verify origin/track-record >/dev/null 2>&1; then
+            python backend/verify_track_record.py --ref origin/track-record --new "$RUNNER_TEMP/tr/recommendations.csv"
+          fi
+          {
+            echo "### Track record"
+            echo ""
+            echo "Last row: \`$(tail -n 1 "$RUNNER_TEMP/tr/recommendations.csv")\`"
+            echo ""
+            echo "SHA-256 of recommendations.csv: \`$(sha256sum "$RUNNER_TEMP/tr/recommendations.csv" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit to track-record branch
         run: |
